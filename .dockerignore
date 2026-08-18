@@ -21,6 +21,10 @@ tests/**
 *.log
 webdav.json
 **/webdav.json
+auth.json
+auth.json.tmp-*
+**/auth.json
+**/auth.json.tmp-*
 .env
 .env.*
 !.env.example

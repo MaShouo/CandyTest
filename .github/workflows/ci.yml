@@ -38,16 +38,11 @@ jobs:
         run: docker build --tag candytest:local .
       - name: Run Compose login and CLI smoke test
         run: |
-          HASH_B64="$(docker run --rm --entrypoint /opt/venv/bin/python candytest:local -c "import base64; from werkzeug.security import generate_password_hash; print(base64.b64encode(generate_password_hash('ci-only-password').encode()).decode())")"
-          SECRET="$(docker run --rm --entrypoint /opt/venv/bin/python candytest:local -c "import secrets; print(secrets.token_hex(32))")"
           cat > .env <<EOF
           PI_VERSION=0.84.2
           CODEX_VERSION=0.147.0
           CANDYTEST_PORT=18765
           CANDYTEST_MEMORY_LIMIT=2g
-          ADMIN_USERNAME=admin
-          PASSWORD_HASH_B64=$HASH_B64
-          SECRET_KEY=$SECRET
           COOKIE_SECURE=0
           EOF
           docker compose --project-name candytest-ci config --quiet
@@ -61,8 +56,12 @@ jobs:
           curl --fail --silent --cookie-jar cookies.txt http://127.0.0.1:18765/login > login.html
           TOKEN="$(sed -n 's/.*name="csrf_token" value="\([^"]*\)".*/\1/p' login.html)"
           test -n "$TOKEN"
-          test "$(curl --silent --output /dev/null --write-out '%{http_code}' --cookie cookies.txt --cookie-jar cookies.txt --data-urlencode "username=admin" --data-urlencode "password=ci-only-password" --data-urlencode "csrf_token=$TOKEN" http://127.0.0.1:18765/login)" = "302"
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' --cookie cookies.txt --cookie-jar cookies.txt --data-urlencode "username=admin" --data-urlencode "password=admin" --data-urlencode "csrf_token=$TOKEN" http://127.0.0.1:18765/login)" = "302"
           curl --fail --silent --cookie cookies.txt http://127.0.0.1:18765/api/runtime | python3 -c "import json,sys; assert json.load(sys.stdin)['deployment'] == 'server'"
+          curl --fail --silent --cookie cookies.txt http://127.0.0.1:18765/ > index.html
+          ACCOUNT_TOKEN="$(sed -n 's/.*name="csrf-token" content="\([^"]*\)".*/\1/p' index.html)"
+          test -n "$ACCOUNT_TOKEN"
+          curl --fail --silent --cookie cookies.txt -H "X-CSRF-Token: $ACCOUNT_TOKEN" -H 'Content-Type: application/json' -X PUT --data '{"username":"ci-admin","current_password":"admin","new_password":"ci-only-password","new_password_confirmation":"ci-only-password"}' http://127.0.0.1:18765/api/settings/account | python3 -c "import json,sys; assert json.load(sys.stdin)['account']['username'] == 'ci-admin'"
           test "$(docker compose --project-name candytest-ci exec -T candytest id -u)" = "1000"
           docker compose --project-name candytest-ci exec -T candytest sh -c 'test -d "$HOME" && test -d "$XDG_CACHE_HOME"'
           docker compose --project-name candytest-ci exec -T candytest pi --version

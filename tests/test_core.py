@@ -217,9 +217,28 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn('e.code !== "WEBDAV_CONFLICT"', source)
         self.assertIn("Pull 不会备份", source)
         template = (Path(__file__).parents[1] / "candytest/templates/index.html").read_text(encoding="utf-8")
-        self.assertIn('id="webdavForm"', template)
-        self.assertNotIn('webdavAutoPull', template)
-        self.assertNotIn('webdavAutoPush', template)
+        self.assertIn('id="selectAllGateways"', template)
+        self.assertIn('href="{{ url_for(\'settings\') }}"', template)
+        self.assertIn('id="pushWebdav"', template)
+        self.assertIn('id="pullWebdav"', template)
+        self.assertNotIn('id="webdavForm"', template)
+        self.assertNotIn('id="proxyForm"', template)
+        self.assertNotIn('innerHTML', source)
+        self.assertIn('syncGatewaySelectAll', source)
+        self.assertIn('input[type=checkbox]:not(:disabled)', source)
+        self.assertIn('e.code !== "WEBDAV_CONFLICT"', source)
+        self.assertIn("Pull 不会备份", source)
+        settings = (Path(__file__).parents[1] / "candytest/templates/settings.html").read_text(encoding="utf-8")
+        settings_source = (Path(__file__).parents[1] / "candytest/static/settings.js").read_text(encoding="utf-8")
+        self.assertIn('id="webdavForm"', settings)
+        self.assertIn('id="proxyForm"', settings)
+        self.assertIn("返回主界面", settings)
+        self.assertIn('src="{{ url_for(\'static\', filename=\'settings.js\') }}"', settings)
+        self.assertNotIn('pushWebdav', settings)
+        self.assertNotIn('pullWebdav', settings)
+        self.assertNotIn("innerHTML", settings_source)
+        self.assertNotIn('webdavAutoPull', settings)
+        self.assertNotIn('webdavAutoPush', settings)
         self.assertNotIn('auto_pull_start', source)
         self.assertNotIn('auto_push_exit', source)
 
@@ -621,18 +640,17 @@ class ServerAuthTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     configured_host()
 
-    def test_server_fails_closed_when_credentials_or_secret_are_invalid(self):
+    def test_server_bootstrap_fails_closed_for_invalid_partial_legacy_input(self):
         from candytest.app import create_app
-        with tempfile.TemporaryDirectory() as temp:
-            for overrides in (
-                {"CANDYTEST_ADMIN_USERNAME": ""},
-                {"CANDYTEST_ADMIN_PASSWORD_HASH": ""},
-                {"CANDYTEST_ADMIN_PASSWORD_HASH": "not-a-password-hash"},
-                {"CANDYTEST_SECRET_KEY": "too-short"},
-            ):
-                with patch.dict(os.environ, self.server_environ(**overrides), clear=False):
-                    with self.assertRaises(RuntimeError):
-                        create_app(Path(temp))
+        cases = (
+            {"CANDYTEST_ADMIN_USERNAME": "admin", "CANDYTEST_ADMIN_PASSWORD_HASH": ""},
+            {"CANDYTEST_ADMIN_PASSWORD_HASH": "not-a-password-hash"},
+            {"CANDYTEST_SECRET_KEY": "too-short"},
+        )
+        for overrides in cases:
+            with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, self.server_environ(**overrides), clear=False):
+                with self.assertRaises(RuntimeError):
+                    create_app(Path(temp))
 
     def test_server_accepts_base64_password_hash_for_compose(self):
         import base64
@@ -649,12 +667,120 @@ class ServerAuthTests(unittest.TestCase):
         finally:
             temp.cleanup()
 
+    def test_fresh_defaults_persist_hashed_credentials_and_account_changes(self):
+        from candytest.app import create_app
+        initial = {
+            "CANDYTEST_DEPLOYMENT": "server", "CANDYTEST_HOST": "127.0.0.1",
+            "CANDYTEST_ADMIN_USERNAME": "", "CANDYTEST_ADMIN_PASSWORD_HASH": "",
+            "CANDYTEST_ADMIN_PASSWORD_HASH_B64": "", "CANDYTEST_SECRET_KEY": "",
+            "CANDYTEST_COOKIE_SECURE": "0",
+        }
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, initial, clear=False):
+            data_dir = Path(temp)
+            app = create_app(data_dir)
+            app.testing = True
+            client = app.test_client()
+            auth_path = data_dir / "auth.json"
+            state = json.loads(auth_path.read_text(encoding="utf-8"))
+            self.assertEqual(state["username"], "admin")
+            self.assertNotEqual(state["password_hash"], "admin")
+            self.assertGreaterEqual(len(state["secret_key"].encode("utf-8")), 32)
+            self.assertNotIn("password", client.get("/api/runtime").get_data(as_text=True))
+            token = self.csrf(client.get("/login"))
+            self.assertEqual(client.post("/login", data={"username": "admin", "password": "admin", "csrf_token": token}).status_code, 302)
+            csrf = self.csrf(client.get("/"))
+            account = client.get("/api/settings/account").get_json()["account"]
+            self.assertEqual(account, {"username": "admin", "default_credentials": True})
+            second = app.test_client()
+            second_token = self.csrf(second.get("/login"))
+            self.assertEqual(second.post("/login", data={"username": "admin", "password": "admin", "csrf_token": second_token}).status_code, 302)
+            response = client.put("/api/settings/account", json={
+                "username": "new-admin", "current_password": "admin", "new_password": "new-password",
+                "new_password_confirmation": "new-password",
+            }, headers={"X-CSRF-Token": csrf})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.get_json()["account"], {"username": "new-admin", "default_credentials": False})
+            self.assertEqual(second.get("/api/runtime").status_code, 401)
+            persisted = json.loads(auth_path.read_text(encoding="utf-8"))
+            self.assertNotIn("new-password", auth_path.read_text(encoding="utf-8"))
+            self.assertEqual(persisted["revision"], 2)
+            legacy_after_change = self.server_environ()
+            with patch.dict(os.environ, legacy_after_change, clear=False):
+                restarted = create_app(data_dir)
+            restarted.testing = True
+            after_restart = restarted.test_client()
+            login = self.csrf(after_restart.get("/login"))
+            self.assertEqual(after_restart.post("/login", data={"username": "new-admin", "password": "new-password", "csrf_token": login}).status_code, 302)
+            stale = restarted.test_client()
+            stale_token = self.csrf(stale.get("/login"))
+            self.assertEqual(stale.post("/login", data={"username": "admin", "password": self.password, "csrf_token": stale_token}).status_code, 401)
+
+    def test_account_validation_and_runtime_corruption_fail_closed(self):
+        from candytest.app import create_app
+        initial = {
+            "CANDYTEST_DEPLOYMENT": "server", "CANDYTEST_HOST": "127.0.0.1",
+            "CANDYTEST_ADMIN_USERNAME": "", "CANDYTEST_ADMIN_PASSWORD_HASH": "",
+            "CANDYTEST_ADMIN_PASSWORD_HASH_B64": "", "CANDYTEST_SECRET_KEY": "",
+            "CANDYTEST_COOKIE_SECURE": "0",
+        }
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, initial, clear=False):
+            data_dir = Path(temp)
+            app = create_app(data_dir); app.testing = True
+            client = app.test_client()
+            token = self.csrf(client.get("/login"))
+            client.post("/login", data={"username": "admin", "password": "admin", "csrf_token": token})
+            csrf = self.csrf(client.get("/"))
+            short = client.put("/api/settings/account", json={
+                "username": "admin", "current_password": "admin", "new_password": "short",
+                "new_password_confirmation": "short",
+            }, headers={"X-CSRF-Token": csrf})
+            self.assertEqual((short.status_code, short.get_json()["error"]["code"]), (400, "INVALID_ACCOUNT"))
+            mismatch = client.put("/api/settings/account", json={
+                "username": "admin", "current_password": "admin", "new_password": "long-enough",
+                "new_password_confirmation": "different",
+            }, headers={"X-CSRF-Token": csrf})
+            self.assertEqual((mismatch.status_code, mismatch.get_json()["error"]["code"]), (400, "INVALID_ACCOUNT"))
+            renamed = client.put("/api/settings/account", json={
+                "username": "renamed-admin", "current_password": "admin", "new_password": "",
+                "new_password_confirmation": "",
+            }, headers={"X-CSRF-Token": csrf})
+            self.assertEqual(renamed.status_code, 200)
+            self.assertEqual(client.get("/api/runtime").status_code, 200)
+
+            (data_dir / "auth.json").write_text("{bad", encoding="utf-8")
+            broken_login = app.test_client().get("/login")
+            self.assertEqual(broken_login.status_code, 503)
+            self.assertIn("认证状态无效", broken_login.get_data(as_text=True))
+
+    def test_account_rejects_wrong_current_password_and_invalid_sidecar(self):
+        from candytest.app import create_app
+        initial = {
+            "CANDYTEST_DEPLOYMENT": "server", "CANDYTEST_HOST": "127.0.0.1",
+            "CANDYTEST_ADMIN_USERNAME": "", "CANDYTEST_ADMIN_PASSWORD_HASH": "",
+            "CANDYTEST_ADMIN_PASSWORD_HASH_B64": "", "CANDYTEST_SECRET_KEY": "",
+            "CANDYTEST_COOKIE_SECURE": "0",
+        }
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, initial, clear=False):
+            app = create_app(Path(temp)); app.testing = True
+            client = app.test_client()
+            token = self.csrf(client.get("/login"))
+            client.post("/login", data={"username": "admin", "password": "admin", "csrf_token": token})
+            csrf = self.csrf(client.get("/"))
+            bad = client.put("/api/settings/account", json={"username": "admin", "current_password": "wrong", "new_password": ""}, headers={"X-CSRF-Token": csrf})
+            self.assertEqual((bad.status_code, bad.get_json()["error"]["code"]), (403, "CURRENT_PASSWORD_INCORRECT"))
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, initial, clear=False):
+            (Path(temp) / "auth.json").write_text("{bad", encoding="utf-8")
+            with self.assertRaises(RuntimeError):
+                create_app(Path(temp))
+
+
     def test_login_protection_csrf_logout_cookie_and_security_headers(self):
         temp, app, client = self.make_client()
         try:
             self.assertEqual(client.get("/healthz").get_json(), {"status": "ok"})
             self.assertEqual(client.get("/healthz").headers["Cache-Control"], "no-store")
             self.assertEqual(client.get("/").status_code, 302)
+            self.assertEqual(client.get("/settings").status_code, 302)
             api = client.get("/api/gateways")
             self.assertEqual((api.status_code, api.get_json()["error"]["code"]), (401, "AUTH_REQUIRED"))
             unauthenticated_post = client.post("/api/gateways", json={})
@@ -674,6 +800,9 @@ class ServerAuthTests(unittest.TestCase):
             self.assertIn("用户名或密码错误", bad_password.get_data(as_text=True))
             csrf = self.login(client)
             self.assertIn('name="csrf-token"', client.get("/").get_data(as_text=True))
+            settings_page = client.get("/settings")
+            self.assertEqual(settings_page.status_code, 200)
+            self.assertIn('name="csrf-token"', settings_page.get_data(as_text=True))
             denied = client.post("/api/gateways", json={})
             self.assertEqual((denied.status_code, denied.get_json()["error"]["code"]), (403, "CSRF_FAILED"))
             allowed = client.post("/api/gateways", json={
@@ -722,6 +851,9 @@ class ServerAuthTests(unittest.TestCase):
             response = local.test_client().get("/")
             self.assertEqual(response.status_code, 200)
             self.assertNotIn("退出登录", response.get_data(as_text=True))
+            settings = local.test_client().get("/settings")
+            self.assertEqual(settings.status_code, 200)
+            self.assertNotIn("登录账号", settings.get_data(as_text=True))
 
     def test_run_only_opens_browser_in_local_mode(self):
         import run

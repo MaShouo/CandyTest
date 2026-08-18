@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import base64
-import binascii
 import ipaddress
 import json
 import os
@@ -14,8 +12,8 @@ from typing import Any
 from urllib.parse import urlparse
 
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for
-from werkzeug.security import check_password_hash
 
+from .auth import AuthStateError, ServerAuthStore
 from . import CODEX_EFFORTS, MAX_ROUNDS, PI_EFFORTS
 from .cli import cli_availability
 from .jobs import JobManager
@@ -136,37 +134,11 @@ def configured_host() -> str:
     return host
 
 
-def _server_auth_config() -> dict[str, Any]:
-    username = os.environ.get("CANDYTEST_ADMIN_USERNAME", "")
-    password_hash = os.environ.get("CANDYTEST_ADMIN_PASSWORD_HASH", "")
-    password_hash_b64 = os.environ.get("CANDYTEST_ADMIN_PASSWORD_HASH_B64", "")
-    secret_key = os.environ.get("CANDYTEST_SECRET_KEY", "")
-    if password_hash and password_hash_b64:
-        raise RuntimeError("server 模式的管理员密码哈希只能配置一种格式")
-    if password_hash_b64:
-        try:
-            password_hash = base64.b64decode(password_hash_b64, validate=True).decode("utf-8")
-        except (binascii.Error, UnicodeDecodeError) as exc:
-            raise RuntimeError("CANDYTEST_ADMIN_PASSWORD_HASH_B64 格式无效") from exc
-    if (not username or username != username.strip() or len(username) > 200
-            or not password_hash or password_hash.count("$") < 2
-            or not password_hash.startswith(("scrypt:", "pbkdf2:"))):
-        raise RuntimeError("server 模式必须配置管理员用户名和有效的 Werkzeug 密码哈希")
-    try:
-        check_password_hash(password_hash, "")
-    except (TypeError, ValueError) as exc:
-        raise RuntimeError("CANDYTEST_ADMIN_PASSWORD_HASH 格式无效") from exc
-    if len(secret_key.encode("utf-8")) < 32:
-        raise RuntimeError("server 模式必须配置至少 32 字节强度的 CANDYTEST_SECRET_KEY")
+def _server_cookie_secure() -> bool:
     raw_secure = os.environ.get("CANDYTEST_COOKIE_SECURE", "1")
     if raw_secure not in {"0", "1"}:
         raise RuntimeError("CANDYTEST_COOKIE_SECURE 只能为 0 或 1")
-    return {
-        "username": username,
-        "password_hash": password_hash,
-        "secret_key": secret_key,
-        "cookie_secure": raw_secure == "1",
-    }
+    return raw_secure == "1"
 
 
 def _new_csrf_token() -> str:
@@ -252,21 +224,24 @@ def sync_runtime_state(app: Flask) -> dict[str, Any] | None:
 
 def create_app(data_dir: Path | None = None) -> Flask:
     deployment = configured_deployment()
-    auth = _server_auth_config() if deployment == "server" else None
+    app_data_dir = data_dir or default_data_dir()
+    auth = ServerAuthStore(app_data_dir) if deployment == "server" else None
+    cookie_secure = _server_cookie_secure() if deployment == "server" else False
     app = Flask(__name__)
     app.config.update(
         JSON_AS_ASCII=False,
         MAX_CONTENT_LENGTH=32 * 1024,
-        SECRET_KEY=auth["secret_key"] if auth else secrets.token_urlsafe(32),
+        SECRET_KEY=auth.current()["secret_key"] if auth else secrets.token_urlsafe(32),
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
-        SESSION_COOKIE_SECURE=auth["cookie_secure"] if auth else False,
+        SESSION_COOKIE_SECURE=cookie_secure,
         PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
     )
     app.json.ensure_ascii = False
     app.extensions["candytest_deployment"] = deployment
+    app.extensions["candytest_auth"] = auth
     app.extensions["candytest_login_limiter"] = LoginRateLimiter()
-    db = Database(data_dir)
+    db = Database(app_data_dir)
     manager = JobManager(db)
     webdav_store = WebDAVConfigStore(db.data_dir)
     webdav = WebDAVSyncService(
@@ -300,7 +275,16 @@ def create_app(data_dir: Path | None = None) -> Flask:
     def _login_page(error: str | None = None, status: int = 200):
         if "csrf_token" not in session:
             session["csrf_token"] = _new_csrf_token()
-        return render_template("login.html", csrf_token=session["csrf_token"], error=error), status
+        try:
+            default_credentials = auth.public()["default_credentials"] if auth else False
+        except AuthStateError:
+            default_credentials = False
+            error = "认证状态无效，请检查数据目录中的 auth.json。"
+            status = 503
+        return render_template(
+            "login.html", csrf_token=session["csrf_token"], error=error,
+            default_credentials=default_credentials,
+        ), status
 
     @app.after_request
     def security_headers(response):
@@ -329,6 +313,18 @@ def create_app(data_dir: Path | None = None) -> Flask:
             if request.path.startswith("/api/"):
                 return api_error("AUTH_REQUIRED", "请先登录", 401)
             return redirect(url_for("login"))
+        try:
+            state = auth.current()
+        except AuthStateError:
+            session.clear()
+            if request.path.startswith("/api/"):
+                return api_error("AUTH_REQUIRED", "认证状态无效，请联系管理员", 401)
+            return redirect(url_for("login"))
+        if session.get("auth_revision") != state["revision"]:
+            session.clear()
+            if request.path.startswith("/api/"):
+                return api_error("AUTH_REQUIRED", "登录已失效，请重新登录", 401)
+            return redirect(url_for("login"))
         if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not _csrf_valid():
             if request.path.startswith("/api/") or request.path == "/logout" or request.headers.get("X-Requested-With") == "XMLHttpRequest":
                 return api_error("CSRF_FAILED", "请求校验失败，请刷新页面后重试", 403)
@@ -341,7 +337,12 @@ def create_app(data_dir: Path | None = None) -> Flask:
             return redirect(url_for("index"))
         if request.method == "GET":
             if session.get("authenticated"):
-                return redirect(url_for("index"))
+                try:
+                    if session.get("auth_revision") == auth.current()["revision"]:
+                        return redirect(url_for("index"))
+                except AuthStateError:
+                    pass
+                session.clear()
             return _login_page()
         if not _csrf_valid():
             return _login_page("请求校验失败，请刷新页面后重试。", 403)
@@ -349,13 +350,18 @@ def create_app(data_dir: Path | None = None) -> Flask:
         client_key = request.remote_addr or "unknown"
         username = request.form.get("username", "")
         password = request.form.get("password", "")
-        if (not limiter.allowed(client_key) or username != auth["username"]
-                or not check_password_hash(auth["password_hash"], password)):
+        try:
+            state = auth.verify(username, password) if limiter.allowed(client_key) else None
+        except AuthStateError:
+            session.clear()
+            return _login_page("认证状态无效，请检查数据目录中的 auth.json。", 503)
+        if state is None:
             limiter.failure(client_key)
             return _login_page("用户名或密码错误，或登录尝试过于频繁。", 401)
         limiter.success(client_key)
         session.clear()
         session["authenticated"] = True
+        session["auth_revision"] = state["revision"]
         session["csrf_token"] = _new_csrf_token()
         session.permanent = True
         return redirect(url_for("index"))
@@ -374,9 +380,28 @@ def create_app(data_dir: Path | None = None) -> Flask:
 
     @app.get("/")
     def index():
+        try:
+            default_credentials = auth.public()["default_credentials"] if auth else False
+        except AuthStateError:
+            session.clear()
+            return _login_page("认证状态无效，请检查数据目录中的 auth.json。", 503)
         return render_template(
             "index.html", deployment=deployment,
             csrf_token=session.get("csrf_token", "") if deployment == "server" else "",
+            default_credentials=default_credentials,
+        )
+
+    @app.get("/settings")
+    def settings():
+        try:
+            default_credentials = auth.public()["default_credentials"] if auth else False
+        except AuthStateError:
+            session.clear()
+            return _login_page("认证状态无效，请检查数据目录中的 auth.json。", 503)
+        return render_template(
+            "settings.html", deployment=deployment,
+            csrf_token=session.get("csrf_token", "") if deployment == "server" else "",
+            default_credentials=default_credentials,
         )
 
     @app.get("/api/runtime")
@@ -384,6 +409,48 @@ def create_app(data_dir: Path | None = None) -> Flask:
         return jsonify({"engines": cli_availability(), "deployment": deployment,
                        "defaults": {"rounds": 5, "reasoning_effort": "low",
                        "mode": "parallel", "timeout_seconds": 300}, "data_dir": str(db.data_dir)})
+
+    if deployment == "server":
+        @app.get("/api/settings/account")
+        def get_account_settings():
+            try:
+                return jsonify({"account": auth.public()})
+            except AuthStateError:
+                session.clear()
+                return api_error("AUTH_STATE_INVALID", "认证状态无效，请检查 auth.json", 503)
+
+        @app.put("/api/settings/account")
+        def update_account_settings():
+            data, error = json_body()
+            if error:
+                return error
+            current_password = data.get("current_password")
+            username = data.get("username")
+            new_password = data.get("new_password", "")
+            confirmation = data.get("new_password_confirmation")
+            if (not isinstance(current_password, str) or not current_password or len(current_password) > 4096
+                    or not isinstance(username, str) or not isinstance(new_password, str)
+                    or len(new_password) > 4096):
+                return api_error("INVALID_ACCOUNT", "请填写当前密码、有效用户名和长度合理的新密码")
+            username = username.strip()
+            if not username or len(username) > 200:
+                return api_error("INVALID_ACCOUNT", "用户名不能为空，且不能超过 200 个字符")
+            if confirmation is not None and (not isinstance(confirmation, str) or confirmation != new_password):
+                return api_error("INVALID_ACCOUNT", "两次输入的新密码不一致")
+            try:
+                account = auth.change(
+                    current_password=current_password, username=username,
+                    new_password=new_password if new_password else None,
+                )
+            except PermissionError:
+                return api_error("CURRENT_PASSWORD_INCORRECT", "当前密码不正确", 403)
+            except AuthStateError:
+                session.clear()
+                return api_error("AUTH_STATE_INVALID", "认证状态无效，请检查 auth.json", 503)
+            except ValueError as exc:
+                return api_error("INVALID_ACCOUNT", str(exc))
+            session["auth_revision"] = account.pop("revision")
+            return jsonify({"account": account})
 
     @app.get("/api/settings/proxy")
     def get_proxy_settings():

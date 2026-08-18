@@ -14,6 +14,7 @@ class DockerDeploymentPolicyTests(unittest.TestCase):
         cls.compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
         cls.env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
         cls.dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
+        cls.gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
         cls.start_bat = (ROOT / "start.bat").read_text(encoding="utf-8")
         cls.ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         cls.readme = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -65,15 +66,19 @@ class DockerDeploymentPolicyTests(unittest.TestCase):
         self.assertIn("CANDYTEST_HOST: 0.0.0.0", self.compose)
         self.assertIn("CANDYTEST_DATA_DIR: /data", self.compose)
         self.assertIn("CANDYTEST_ADMIN_USERNAME", self.compose)
+        self.assertIn('"${ADMIN_USERNAME:-}"', self.compose)
         self.assertIn("CANDYTEST_ADMIN_PASSWORD_HASH_B64", self.compose)
+        self.assertIn('"${PASSWORD_HASH_B64:-}"', self.compose)
         self.assertIn("CANDYTEST_SECRET_KEY", self.compose)
+        self.assertIn('"${SECRET_KEY:-}"', self.compose)
+        self.assertNotIn(":?Set ", self.compose)
         self.assertIn("CANDYTEST_COOKIE_SECURE", self.compose)
         self.assertIn("candytest-data:/data", self.compose)
         self.assertIn("host.docker.internal:host-gateway", self.compose)
         for setting in ("read_only: true", "tmpfs:", "cap_drop:", "ALL", "no-new-privileges:true", "pids_limit: 512", "mem_limit:", "restart: unless-stopped", "healthcheck:"):
             self.assertIn(setting, self.compose)
 
-    def test_env_example_contains_placeholders_only(self):
+    def test_env_example_documents_default_login_and_optional_migration_inputs(self):
         values = {
             line.split("=", 1)[0]: line.split("=", 1)[1]
             for line in self.env_example.splitlines()
@@ -83,20 +88,25 @@ class DockerDeploymentPolicyTests(unittest.TestCase):
         self.assertEqual(values["PASSWORD_HASH_B64"], "")
         self.assertEqual(values["SECRET_KEY"], "")
         self.assertEqual(values["COOKIE_SECURE"], "1")
+        self.assertIn("admin / admin", self.env_example)
+        self.assertIn("optional", self.env_example.lower())
         for marker in ("s" + "k-", "g" + "hp_", "github" + "_pat_", "xox" + "b-"):
             self.assertNotIn(marker, self.env_example)
         self.assertNotIn("scrypt:", self.env_example)
         self.assertNotIn("pbkdf2:", self.env_example)
 
     def test_dockerignore_excludes_local_secrets_and_test_files(self):
-        for entry in (".git", ".venv", "tests", "*.py[cod]", "*.sqlite3", "webdav.json", ".env", "*.pem", "*.key", "*.crt"):
+        for entry in (".git", ".venv", "tests", "*.py[cod]", "*.sqlite3", "webdav.json", "auth.json", "auth.json.tmp-*", ".env", "*.pem", "*.key", "*.crt"):
             self.assertIn(entry, self.dockerignore)
+        for entry in ("auth.json", "auth.json.tmp-*"):
+            self.assertIn(entry, self.gitignore)
         self.assertIn("!.env.example", self.dockerignore)
 
     def test_ci_exercises_compose_login_and_container_clis(self):
         self.assertIn("docker compose --project-name candytest-ci up", self.ci)
-        self.assertIn("PASSWORD_HASH_B64", self.ci)
-        self.assertIn("csrf_token", self.ci)
+        self.assertNotIn("HASH_B64=", self.ci)
+        self.assertIn("password=admin", self.ci)
+        self.assertIn("/api/settings/account", self.ci)
         self.assertIn("/api/runtime", self.ci)
         self.assertIn("pi --version", self.ci)
         self.assertIn("codex --version", self.ci)

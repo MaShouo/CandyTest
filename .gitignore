@@ -23,6 +23,8 @@ candytest.sqlite3-*
 *.sqlite3-wal
 webdav.json
 .webdav-*.tmp
+auth.json
+auth.json.tmp-*
 
 # Secrets and local environment files
 .env

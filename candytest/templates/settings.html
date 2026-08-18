@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>设置 · CandyTest</title>
+  {% if deployment == 'server' %}<meta name="csrf-token" content="{{ csrf_token }}">{% endif %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header class="topbar"><div><h1>CandyTest 设置</h1><p>{% if deployment == 'server' %}登录账号、WebDAV 同步与 Clash 网络代理{% else %}WebDAV 同步与 Clash 网络代理{% endif %}</p></div><div class="header-actions"><a class="button-link secondary" href="{{ url_for('index') }}">返回主界面</a></div></header>
+<main>
+  <p id="flash" class="flash" role="status"></p>
+  <div class="settings-layout">
+    <nav class="settings-nav" aria-label="设置分类">
+      <button type="button" class="settings-tab active" data-section="webdav" aria-selected="true">WebDAV</button>
+      <button type="button" class="settings-tab" data-section="proxy" aria-selected="false">Clash 代理</button>
+      {% if deployment == 'server' %}<button type="button" class="settings-tab" data-section="account" aria-selected="false">登录账号</button>{% endif %}
+    </nav>
+    <div class="settings-content">
+      <section id="webdavSettings" class="panel settings-section"><div class="section-title"><div><h2>WebDAV 完整同步</h2><p>同步整个 SQLite 数据库：中转站、API Key、Clash 设置、任务、回答和历史都会完整覆盖。</p></div><span id="webdavStatus" class="badge">未配置</span></div>
+        <form id="webdavForm" class="webdav-grid" autocomplete="off">
+          <label class="full">WebDAV 服务地址<input name="server_url" id="webdavServerUrl" type="url" maxlength="2048" required placeholder="https://cloud.example.com/dav/files/user"><small>填写远端目录的父地址；支持 Basic Auth。</small></label>
+          <label>远端目录<input name="remote_path" id="webdavRemotePath" maxlength="1000" required placeholder="CandyTest"></label>
+          <label>用户名<input name="username" id="webdavUsername" maxlength="500" required></label>
+          <label class="full">密码<input name="password" id="webdavPassword" type="password" maxlength="4096" placeholder="编辑时留空则保留已保存密码"></label>
+          <div class="full actions webdav-actions"><button type="submit">保存设置</button><button id="testWebdav" type="button" class="secondary">保存并测试连接</button><button id="refreshWebdav" type="button" class="secondary">检查远端状态</button></div>
+        </form>
+        <p id="webdavInfo" class="muted">尚未配置。</p>
+        <p class="warn"><strong>注意：</strong>Push 和 Pull 位于主界面。Pull 不会自动备份，且会替换本机全部 CandyTest 数据。</p>
+      </section>
+      <section id="proxySettings" class="panel settings-section" hidden><div class="section-title"><div><h2>Clash 网络代理</h2><p>全局应用于后续启动的 pi/Codex 测试；支持 Clash HTTP/HTTPS 代理端口。</p></div><span id="proxyStatus" class="badge">未启用</span></div>
+        <form id="proxyForm" class="proxy-controls" autocomplete="off"><label class="check"><input name="enabled" id="proxyEnabled" type="checkbox"> 启用全局代理</label><label class="proxy-url">代理 URL<input name="url" id="proxyUrl" type="url" maxlength="2000" placeholder="http://localhost:7890"><small>填写 Clash 的 HTTP 代理端口，格式为 http://主机:端口；不支持 SOCKS5 或代理认证。</small></label><div class="actions"><button type="submit">保存代理设置</button></div></form>
+      </section>
+      {% if deployment == 'server' %}<section id="accountSettings" class="panel settings-section" hidden><div class="section-title"><div><h2>登录账号</h2><p>修改服务器管理员登录凭据。保存后，其他浏览器和旧会话需要重新登录。</p></div></div>
+        <p id="accountDefaultWarning" class="notice default-credential-warning"{% if not default_credentials %} hidden{% endif %}><strong>高风险默认凭据：</strong>当前用户名和密码均为 <code>admin</code>，请立即修改。</p>
+        <form id="accountForm" class="webdav-grid" autocomplete="off">
+          <label>用户名<input name="username" id="accountUsername" maxlength="200" required autocomplete="username"></label>
+          <label>当前密码<input name="current_password" id="accountCurrentPassword" type="password" maxlength="4096" required autocomplete="current-password"></label>
+          <label>新密码（可选）<input name="new_password" id="accountNewPassword" type="password" maxlength="4096" autocomplete="new-password"><small>留空则保留当前密码；填写时至少 8 个字符。</small></label>
+          <label>确认新密码<input name="new_password_confirmation" id="accountNewPasswordConfirmation" type="password" maxlength="4096" autocomplete="new-password"></label>
+          <div class="full actions"><button type="submit">保存登录账号</button></div>
+        </form>
+      </section>{% endif %}
+    </div>
+  </div>
+</main>
+<script src="{{ url_for('static', filename='settings.js') }}"></script>
+</body></html>
