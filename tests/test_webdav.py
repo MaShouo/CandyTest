@@ -29,7 +29,7 @@ from candytest.webdav_sync import (
 
 FLASK_AVAILABLE = importlib.util.find_spec("flask") is not None
 if FLASK_AVAILABLE:
-    from candytest.app import create_app, perform_shutdown_sync, perform_startup_sync
+    from candytest.app import create_app
 
 
 class _WebDAVState:
@@ -180,8 +180,6 @@ class WebDAVSyncTests(unittest.TestCase):
             "remote_path": remote_path,
             "username": "alice",
             "password": "not-a-real-password",
-            "auto_pull_start": True,
-            "auto_push_exit": True,
         }
 
     def configure(self, url: str, remote_path: str = "/Candy Test/") -> dict:
@@ -194,6 +192,33 @@ class WebDAVSyncTests(unittest.TestCase):
             "model": "test-model", "enabled": 1,
         })
         target.save_proxy_settings(True, "http://localhost:7890")
+
+    def test_v1_sidecar_migrates_without_lifecycle_switches(self):
+        legacy_device = "123e4567-e89b-42d3-a456-426614174000"
+        legacy_revision = "123e4567-e89b-42d3-a456-426614174001"
+        legacy = {
+            **self.settings("https://cloud.example/dav", "Candy Test"),
+            "version": 1,
+            "auto_pull_start": True,
+            "auto_push_exit": False,
+            "device_id": legacy_device,
+            "last_seen_revision": legacy_revision,
+        }
+        self.store.path.write_text(json.dumps(legacy), encoding="utf-8")
+
+        public = self.store.public()
+        migrated = json.loads(self.store.path.read_text(encoding="utf-8"))
+        self.assertEqual(migrated["version"], 2)
+        self.assertNotIn("auto_pull_start", migrated)
+        self.assertNotIn("auto_push_exit", migrated)
+        self.assertNotIn("auto_pull_start", public)
+        self.assertNotIn("auto_push_exit", public)
+        self.assertEqual(migrated["server_url"], "https://cloud.example/dav")
+        self.assertEqual(migrated["remote_path"], "Candy Test")
+        self.assertEqual(migrated["username"], "alice")
+        self.assertEqual(migrated["password"], "not-a-real-password")
+        self.assertEqual(migrated["device_id"], legacy_device)
+        self.assertEqual(migrated["last_seen_revision"], legacy_revision)
 
     def test_sidecar_masks_password_retains_blank_and_uses_local_permissions(self):
         with WebDAVFixture() as fixture:
@@ -352,14 +377,12 @@ class WebDAVApiLifecycleTests(unittest.TestCase):
         self.manager = self.app.extensions["candytest_jobs"]
 
     @staticmethod
-    def settings(url: str, *, auto_pull: bool = True, auto_push: bool = True) -> dict:
+    def settings(url: str) -> dict:
         return {
             "server_url": url,
             "remote_path": "CandyTest",
             "username": "alice",
             "password": "not-a-real-password",
-            "auto_pull_start": auto_pull,
-            "auto_push_exit": auto_push,
         }
 
     def add_gateway(self, name: str = "API 站点") -> dict:
@@ -400,6 +423,11 @@ class WebDAVApiLifecycleTests(unittest.TestCase):
             pulled = self.client.post("/api/webdav/pull", json={"confirm": True})
             self.assertEqual(pulled.status_code, 200)
             self.assertEqual(self.db.gateways()[0]["name"], "API 站点")
+            settings = self.client.get("/api/settings/webdav").get_json()
+            self.assertEqual(settings["last_operation"]["operation"], "pull")
+            self.assertNotIn("automatic", settings["last_operation"])
+            self.assertNotIn("auto_pull_start", settings["webdav"])
+            self.assertNotIn("auto_push_exit", settings["webdav"])
             self.assertFalse((self.root / "backups").exists())
 
     def test_sync_reservation_blocks_jobs_and_mutations(self):
@@ -413,49 +441,35 @@ class WebDAVApiLifecycleTests(unittest.TestCase):
         finally:
             self.manager.release_sync()
 
-    def test_automatic_lifecycle_pull_failure_continues_and_push_conflict_skips(self):
-        self.store.save(self.settings("http://localhost:9999/dav"))
-        with patch.object(self.service, "pull", side_effect=WebDAVRequestError()):
-            state = perform_startup_sync(self.app)
-        self.assertEqual(state["status"], "failed")
-        self.assertEqual(state["error"]["code"], "WEBDAV_REQUEST_FAILED")
-
-        with patch.object(self.service, "push", side_effect=WebDAVSyncConflictError()):
-            state = perform_shutdown_sync(self.app)
-        self.assertEqual(state["status"], "skipped")
-        self.assertEqual(state["error"]["code"], "WEBDAV_CONFLICT")
-
-    def test_run_main_wraps_waitress_with_startup_and_shutdown_sync(self):
+    def test_run_main_serves_without_lifecycle_sync(self):
         import run
 
         fake_app = object()
         with patch("run.configured_host", return_value="127.0.0.1"), \
              patch("run.configured_port", return_value=8765), \
              patch("run.create_app", return_value=fake_app), \
-             patch("run.perform_startup_sync", return_value={"status": "disabled"}) as startup, \
-             patch("run.perform_shutdown_sync", return_value={"status": "disabled"}) as shutdown, \
              patch("run.threading.Timer") as timer, \
              patch("run.serve") as serve:
             run.main()
-        startup.assert_called_once_with(fake_app)
         serve.assert_called_once_with(fake_app, host="127.0.0.1", port=8765, threads=8)
-        shutdown.assert_called_once_with(fake_app)
         timer.return_value.start.assert_called_once()
+        source = Path(run.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("perform_startup_sync", source)
+        self.assertNotIn("perform_shutdown_sync", source)
 
-    def test_automatic_shutdown_push_then_startup_pull_restores_full_data(self):
-        with WebDAVFixture() as fixture:
-            self.store.save(self.settings(fixture.url))
-            gateway = self.add_gateway("自动同步站")
-            pushed = perform_shutdown_sync(self.app)
-            self.assertEqual(pushed["status"], "completed")
+    def test_app_main_serves_without_lifecycle_sync(self):
+        import candytest.app as app_module
 
-            self.db.update_gateway(gateway["id"], {
-                "name": "应被启动 Pull 覆盖", "base_url": gateway["base_url"],
-                "api_key": None, "model": gateway["model"], "enabled": 1,
-            })
-            pulled = perform_startup_sync(self.app)
-            self.assertEqual(pulled["status"], "completed")
-            self.assertEqual(self.db.gateways()[0]["name"], "自动同步站")
+        fake_app = object()
+        with patch.object(app_module, "configured_host", return_value="127.0.0.1"), \
+             patch.object(app_module, "configured_port", return_value=8765), \
+             patch.object(app_module, "create_app", return_value=fake_app), \
+             patch("waitress.serve") as serve:
+            app_module.main()
+        serve.assert_called_once_with(fake_app, host="127.0.0.1", port=8765, threads=8)
+        source = Path(app_module.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("perform_startup_sync", source)
+        self.assertNotIn("perform_shutdown_sync", source)
 
 
 if __name__ == "__main__":

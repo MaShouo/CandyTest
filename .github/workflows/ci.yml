@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.10"
+          - os: windows-latest
+            python: "3.13"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - run: python -m compileall -q candytest tests run.py
+      - run: python -m unittest discover -s tests -v
+
+  container:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build --tag candytest:local .
+      - name: Run Compose login and CLI smoke test
+        run: |
+          HASH_B64="$(docker run --rm --entrypoint /opt/venv/bin/python candytest:local -c "import base64; from werkzeug.security import generate_password_hash; print(base64.b64encode(generate_password_hash('ci-only-password').encode()).decode())")"
+          SECRET="$(docker run --rm --entrypoint /opt/venv/bin/python candytest:local -c "import secrets; print(secrets.token_hex(32))")"
+          cat > .env <<EOF
+          PI_VERSION=0.84.2
+          CODEX_VERSION=0.147.0
+          CANDYTEST_PORT=18765
+          CANDYTEST_MEMORY_LIMIT=2g
+          ADMIN_USERNAME=admin
+          PASSWORD_HASH_B64=$HASH_B64
+          SECRET_KEY=$SECRET
+          COOKIE_SECURE=0
+          EOF
+          docker compose --project-name candytest-ci config --quiet
+          docker compose --project-name candytest-ci up --detach --no-build
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18765/healthz | python3 -c "import json,sys; assert json.load(sys.stdin) == {'status':'ok'}"; then break; fi
+            if [ "$attempt" = 30 ]; then docker compose --project-name candytest-ci logs; exit 1; fi
+            sleep 2
+          done
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:18765/)" = "302"
+          curl --fail --silent --cookie-jar cookies.txt http://127.0.0.1:18765/login > login.html
+          TOKEN="$(sed -n 's/.*name="csrf_token" value="\([^"]*\)".*/\1/p' login.html)"
+          test -n "$TOKEN"
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' --cookie cookies.txt --cookie-jar cookies.txt --data-urlencode "username=admin" --data-urlencode "password=ci-only-password" --data-urlencode "csrf_token=$TOKEN" http://127.0.0.1:18765/login)" = "302"
+          curl --fail --silent --cookie cookies.txt http://127.0.0.1:18765/api/runtime | python3 -c "import json,sys; assert json.load(sys.stdin)['deployment'] == 'server'"
+          test "$(docker compose --project-name candytest-ci exec -T candytest id -u)" = "1000"
+          docker compose --project-name candytest-ci exec -T candytest sh -c 'test -d "$HOME" && test -d "$XDG_CACHE_HOME"'
+          docker compose --project-name candytest-ci exec -T candytest pi --version
+          docker compose --project-name candytest-ci exec -T candytest codex --version
+          docker compose --project-name candytest-ci exec -T candytest pi --help >/dev/null
+          docker compose --project-name candytest-ci exec -T candytest codex exec --help >/dev/null
+      - name: Cleanup
+        if: always()
+        run: docker compose --project-name candytest-ci down --volumes --remove-orphans || true

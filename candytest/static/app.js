@@ -10,8 +10,13 @@
   function num(value) { return value == null ? "—" : String(value); }
   function flash(message, isError = false) { const el = $("#flash"); el.textContent = message || ""; el.classList.toggle("error", isError); }
   async function api(url, options = {}) {
-    const opts = { ...options, headers: { ...(options.body ? { "Content-Type": "application/json" } : {}), ...(options.headers || {}) } };
+    const method = (options.method || "GET").toUpperCase();
+    const csrf = document.querySelector('meta[name="csrf-token"]')?.content;
+    const headers = { ...(options.body ? { "Content-Type": "application/json" } : {}), ...(options.headers || {}) };
+    if (csrf && ["POST", "PUT", "PATCH", "DELETE"].includes(method)) headers["X-CSRF-Token"] = csrf;
+    const opts = { ...options, headers };
     const response = await fetch(url, opts); const data = await response.json().catch(() => ({}));
+    if (response.status === 401) { window.location.assign("/login"); }
     if (!response.ok) { const error = new Error(data.error?.message || `请求失败 (${response.status})`); error.code = data.error?.code || "HTTP_ERROR"; error.status = response.status; throw error; }
     return data;
   }
@@ -49,9 +54,9 @@
   function webdavLastText(last) {
     if (!last) return "尚未执行同步。";
     const names = { pull: "Pull", push: "Push", test: "连接测试" };
-    const statuses = { completed: "完成", failed: "失败", skipped: "因冲突跳过", disabled: "未启用" };
+    const statuses = { completed: "完成", failed: "失败" };
     const suffix = last.result?.revision ? ` · revision ${shortRevision(last.result.revision)}` : last.error?.message ? ` · ${last.error.message}` : "";
-    return `${last.automatic ? "自动" : "手动"}${names[last.operation] || last.operation}：${statuses[last.status] || last.status}${suffix}`;
+    return `${names[last.operation] || last.operation}：${statuses[last.status] || last.status}${suffix}`;
   }
   function renderWebdav(settings, last = null) {
     state.webdav = settings;
@@ -60,12 +65,10 @@
     $("#webdavUsername").value = settings.username || "";
     $("#webdavPassword").value = "";
     $("#webdavPassword").placeholder = settings.password_saved ? "已保存；留空则保留" : "请输入 WebDAV 密码";
-    $("#webdavAutoPull").checked = Boolean(settings.auto_pull_start);
-    $("#webdavAutoPush").checked = Boolean(settings.auto_push_exit);
     const badge = $("#webdavStatus"); badge.textContent = settings.configured ? "已配置" : "未配置"; badge.className = `badge ${settings.configured ? "ok" : ""}`;
     $("#webdavInfo").textContent = `${webdavLastText(last)} · 本机已见 revision：${shortRevision(settings.last_seen_revision)}`;
   }
-  function webdavBody() { const f = $("#webdavForm"); return { server_url: f.server_url.value, remote_path: f.remote_path.value, username: f.username.value, password: f.password.value, auto_pull_start: f.auto_pull_start.checked, auto_push_exit: f.auto_push_exit.checked }; }
+  function webdavBody() { const f = $("#webdavForm"); return { server_url: f.server_url.value, remote_path: f.remote_path.value, username: f.username.value, password: f.password.value }; }
   async function saveWebdav(showMessage = true) { const data = await api("/api/settings/webdav", { method: "PUT", body: JSON.stringify(webdavBody()) }); renderWebdav(data.webdav); if (showMessage) flash("WebDAV 设置已保存。"); return data.webdav; }
   async function loadWebdav() { const data = await api("/api/settings/webdav"); renderWebdav(data.webdav, data.last_operation); }
   function setSyncBusy(busy) { state.syncBusy = busy; for (const element of $("#webdavForm").elements) element.disabled = busy; }
@@ -137,6 +140,8 @@
   $("#jobForm").onsubmit = async (event) => { event.preventDefault(); const f = event.currentTarget, gateway_ids = [...document.querySelectorAll("#gatewayRows input[type=checkbox]:checked")].map(x => Number(x.value)); const body = { engine: f.engine.value, rounds: Number(f.rounds.value), reasoning_effort: f.reasoning_effort.value, model_override: f.model_override.value, mode: f.mode.value, gateway_ids }; try { const result = await api("/api/jobs", { method: "POST", body: JSON.stringify(body) }); flash(`任务 #${result.job_id} 已启动。`); await refreshCurrent(); } catch (e) { flash(e.message, true); } };
   $("#stopJob").onclick = async () => { if (!state.currentId || !confirm("确定中断当前测试？已完成的轮次会保留，正在调用的 CLI 进程将被终止。")) return; const button = $("#stopJob"); button.disabled = true; button.textContent = "正在中断…"; try { await api(`/api/jobs/${state.currentId}/cancel`, { method: "POST" }); flash("已发送中断请求，正在终止 CLI 调用…"); await refreshCurrent(); } catch (e) { flash(e.message, true); button.disabled = false; button.textContent = "中断测试"; } };
   $("#clearHistory").onclick = async () => { if (!confirm("确认清空所有测试任务和运行历史？中转站配置不会删除。")) return; try { await api("/api/history", { method: "DELETE", body: JSON.stringify({ confirm: true }) }); flash("历史已清空。"); await loadHistory(); renderJob(null); } catch (e) { flash(e.message, true); } };
+  const logoutButton = $("#logout");
+  if (logoutButton) logoutButton.onclick = async () => { try { await api("/logout", { method: "POST", body: "{}" }); window.location.assign("/login"); } catch (e) { flash(e.message, true); } };
   async function init() { try { state.runtime = await api("/api/runtime"); renderEngines(); await Promise.all([loadWebdav(), loadProxy(), loadHistory(), loadGateways(), refreshCurrent()]); setInterval(() => refreshCurrent().catch(e => flash(e.message, true)), 2000); } catch (e) { flash(e.message, true); } }
   init();
 })();

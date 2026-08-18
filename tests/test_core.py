@@ -218,8 +218,10 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn("Pull 不会备份", source)
         template = (Path(__file__).parents[1] / "candytest/templates/index.html").read_text(encoding="utf-8")
         self.assertIn('id="webdavForm"', template)
-        self.assertIn('id="webdavAutoPull"', template)
-        self.assertIn('id="webdavAutoPush"', template)
+        self.assertNotIn('webdavAutoPull', template)
+        self.assertNotIn('webdavAutoPush', template)
+        self.assertNotIn('auto_pull_start', source)
+        self.assertNotIn('auto_push_exit', source)
 
 
 class StorageTests(unittest.TestCase):
@@ -560,5 +562,183 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(len(self.client.get("/api/gateways").get_json()["gateways"]), 1)
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
+@unittest.skipUnless(FLASK_AVAILABLE, "Flask is not installed; install requirements.txt to run API tests")
+class ServerAuthTests(unittest.TestCase):
+    password = "correct horse battery staple"
+    secret_key = "a" * 64
+
+    def server_environ(self, **overrides: str) -> dict[str, str]:
+        from werkzeug.security import generate_password_hash
+        values = {
+            "CANDYTEST_DEPLOYMENT": "server",
+            "CANDYTEST_HOST": "127.0.0.1",
+            "CANDYTEST_ADMIN_USERNAME": "admin",
+            "CANDYTEST_ADMIN_PASSWORD_HASH": generate_password_hash(self.password),
+            "CANDYTEST_SECRET_KEY": self.secret_key,
+            "CANDYTEST_COOKIE_SECURE": "0",
+        }
+        values.update(overrides)
+        return values
+
+    def make_client(self, **overrides: str):
+        from candytest.app import create_app
+        temp = tempfile.TemporaryDirectory()
+        with patch.dict(os.environ, self.server_environ(**overrides), clear=False):
+            app = create_app(Path(temp.name))
+        app.testing = True
+        return temp, app, app.test_client()
+
+    @staticmethod
+    def csrf(response) -> str:
+        import re
+        match = re.search(r'name="csrf_token" value="([^"]+)"', response.get_data(as_text=True))
+        if not match:
+            match = re.search(r'name="csrf-token" content="([^"]+)"', response.get_data(as_text=True))
+        if not match:
+            raise AssertionError("CSRF token missing")
+        return match.group(1)
+
+    def login(self, client):
+        page = client.get("/login")
+        token = self.csrf(page)
+        response = client.post("/login", data={"username": "admin", "password": self.password, "csrf_token": token})
+        self.assertEqual(response.status_code, 302)
+        return self.csrf(client.get("/"))
+
+    def test_deployment_and_host_validation(self):
+        from candytest.app import configured_deployment, configured_host
+        with patch.dict(os.environ, {"CANDYTEST_DEPLOYMENT": "broken"}, clear=False):
+            with self.assertRaisesRegex(RuntimeError, "local 或 server"):
+                configured_deployment()
+        with patch.dict(os.environ, {"CANDYTEST_DEPLOYMENT": "local", "CANDYTEST_HOST": "0.0.0.0"}, clear=False):
+            with self.assertRaisesRegex(RuntimeError, "回环"):
+                configured_host()
+        for host in ("0.0.0.0", "127.0.0.1", "10.0.0.1", "8.8.8.8", "::"):
+            with patch.dict(os.environ, {"CANDYTEST_DEPLOYMENT": "server", "CANDYTEST_HOST": host}, clear=False):
+                self.assertEqual(configured_host(), host)
+        for host in ("224.0.0.1", "240.0.0.1"):
+            with patch.dict(os.environ, {"CANDYTEST_DEPLOYMENT": "server", "CANDYTEST_HOST": host}, clear=False):
+                with self.assertRaises(RuntimeError):
+                    configured_host()
+
+    def test_server_fails_closed_when_credentials_or_secret_are_invalid(self):
+        from candytest.app import create_app
+        with tempfile.TemporaryDirectory() as temp:
+            for overrides in (
+                {"CANDYTEST_ADMIN_USERNAME": ""},
+                {"CANDYTEST_ADMIN_PASSWORD_HASH": ""},
+                {"CANDYTEST_ADMIN_PASSWORD_HASH": "not-a-password-hash"},
+                {"CANDYTEST_SECRET_KEY": "too-short"},
+            ):
+                with patch.dict(os.environ, self.server_environ(**overrides), clear=False):
+                    with self.assertRaises(RuntimeError):
+                        create_app(Path(temp))
+
+    def test_server_accepts_base64_password_hash_for_compose(self):
+        import base64
+        from werkzeug.security import generate_password_hash
+
+        encoded = base64.b64encode(generate_password_hash(self.password).encode("utf-8")).decode("ascii")
+        temp, app, client = self.make_client(
+            CANDYTEST_ADMIN_PASSWORD_HASH="",
+            CANDYTEST_ADMIN_PASSWORD_HASH_B64=encoded,
+        )
+        try:
+            self.login(client)
+            self.assertEqual(client.get("/api/runtime").status_code, 200)
+        finally:
+            temp.cleanup()
+
+    def test_login_protection_csrf_logout_cookie_and_security_headers(self):
+        temp, app, client = self.make_client()
+        try:
+            self.assertEqual(client.get("/healthz").get_json(), {"status": "ok"})
+            self.assertEqual(client.get("/healthz").headers["Cache-Control"], "no-store")
+            self.assertEqual(client.get("/").status_code, 302)
+            api = client.get("/api/gateways")
+            self.assertEqual((api.status_code, api.get_json()["error"]["code"]), (401, "AUTH_REQUIRED"))
+            unauthenticated_post = client.post("/api/gateways", json={})
+            self.assertEqual((unauthenticated_post.status_code, unauthenticated_post.get_json()["error"]["code"]), (401, "AUTH_REQUIRED"))
+            page = client.get("/login")
+            self.assertEqual(page.headers["Cache-Control"], "no-store")
+            self.assertIn("default-src 'self'", page.headers["Content-Security-Policy"])
+            self.assertEqual(page.headers["X-Content-Type-Options"], "nosniff")
+            self.assertEqual(page.headers["X-Frame-Options"], "DENY")
+            self.assertEqual(page.headers["Referrer-Policy"], "no-referrer")
+            self.assertNotIn("Strict-Transport-Security", page.headers)
+            bad_csrf = client.post("/login", data={"username": "admin", "password": self.password})
+            self.assertEqual(bad_csrf.status_code, 403)
+            token = self.csrf(page)
+            bad_password = client.post("/login", data={"username": "admin", "password": "wrong", "csrf_token": token})
+            self.assertEqual(bad_password.status_code, 401)
+            self.assertIn("用户名或密码错误", bad_password.get_data(as_text=True))
+            csrf = self.login(client)
+            self.assertIn('name="csrf-token"', client.get("/").get_data(as_text=True))
+            denied = client.post("/api/gateways", json={})
+            self.assertEqual((denied.status_code, denied.get_json()["error"]["code"]), (403, "CSRF_FAILED"))
+            allowed = client.post("/api/gateways", json={
+                "name": "server", "base_url": "https://gateway.example/v1", "api_key": SECRET,
+                "model": "model", "enabled": True,
+            }, headers={"X-CSRF-Token": csrf})
+            self.assertEqual(allowed.status_code, 201)
+            logout_denied = client.post("/logout")
+            self.assertEqual((logout_denied.status_code, logout_denied.get_json()["error"]["code"]), (403, "CSRF_FAILED"))
+            logout = client.post("/logout", headers={"X-CSRF-Token": csrf})
+            self.assertEqual(logout.get_json(), {"ok": True})
+            self.assertEqual(client.get("/api/gateways").status_code, 401)
+        finally:
+            temp.cleanup()
+
+    def test_login_rate_limiter_uses_generic_failure_message(self):
+        temp, app, client = self.make_client()
+        try:
+            token = self.csrf(client.get("/login"))
+            for _ in range(6):
+                response = client.post("/login", data={
+                    "username": "admin", "password": "wrong", "csrf_token": token,
+                })
+                self.assertEqual(response.status_code, 401)
+                self.assertIn("用户名或密码错误，或登录尝试过于频繁", response.get_data(as_text=True))
+        finally:
+            temp.cleanup()
+
+    def test_server_secure_cookie_default_and_local_remains_unprotected(self):
+        temp, app, client = self.make_client(CANDYTEST_COOKIE_SECURE="1")
+        try:
+            login_page = client.get("/login")
+            response = client.post("/login", data={
+                "username": "admin", "password": self.password, "csrf_token": self.csrf(login_page),
+            })
+            cookie = response.headers["Set-Cookie"]
+            self.assertIn("Secure", cookie)
+            self.assertIn("HttpOnly", cookie)
+            self.assertIn("SameSite=Lax", cookie)
+        finally:
+            temp.cleanup()
+        from candytest.app import create_app
+        with tempfile.TemporaryDirectory() as local_temp, patch.dict(os.environ, {"CANDYTEST_DEPLOYMENT": "local"}, clear=False):
+            local = create_app(Path(local_temp))
+            local.testing = True
+            response = local.test_client().get("/")
+            self.assertEqual(response.status_code, 200)
+            self.assertNotIn("退出登录", response.get_data(as_text=True))
+
+    def test_run_only_opens_browser_in_local_mode(self):
+        import run
+        sentinel = RuntimeError("stop serving")
+        with patch("run.create_app", return_value=object()), patch("run.serve", side_effect=sentinel), \
+             patch("run.webbrowser.open") as opened, patch("run.threading.Timer") as timer, \
+             patch("run.configured_host", return_value="127.0.0.1"), patch("run.configured_port", return_value=8765), \
+             patch("run.configured_deployment", return_value="local"):
+            with self.assertRaisesRegex(RuntimeError, "stop serving"):
+                run.main()
+            timer.assert_called_once()
+            opened.assert_not_called()
+        with patch("run.create_app", return_value=object()), patch("run.serve", side_effect=sentinel), \
+             patch("run.webbrowser.open") as opened, patch("run.threading.Timer") as timer, \
+             patch("run.configured_host", return_value="0.0.0.0"), patch("run.configured_port", return_value=8765), \
+             patch("run.configured_deployment", return_value="server"):
+            with self.assertRaisesRegex(RuntimeError, "stop serving"):
+                run.main()
+            timer.assert_not_called()
+            opened.assert_not_called()

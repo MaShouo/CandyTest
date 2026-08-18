@@ -26,6 +26,7 @@ from requests.auth import AuthBase
 from .storage import CURRENT_SCHEMA_VERSION, Database
 
 MAX_TRANSFER_BYTES = 500 * 1024 * 1024
+SIDECAR_VERSION = 2
 MANIFEST_FILENAME = "manifest.json"
 SNAPSHOT_FILENAME = "candytest.sqlite3"
 MANIFEST_FORMAT = "candytest-sqlite-mirror"
@@ -208,15 +209,20 @@ class WebDAVConfigStore:
     @staticmethod
     def _defaults() -> dict[str, Any]:
         return {
-            "version": 1,
+            "version": SIDECAR_VERSION,
             "server_url": "",
             "remote_path": "",
             "username": "",
             "password": "",
-            "auto_pull_start": False,
-            "auto_push_exit": False,
             "device_id": "",
             "last_seen_revision": None,
+        }
+
+    @staticmethod
+    def _legacy_fields() -> set[str]:
+        return {
+            "version", "server_url", "remote_path", "username", "password",
+            "auto_pull_start", "auto_push_exit", "device_id", "last_seen_revision",
         }
 
     def _read(self) -> dict[str, Any]:
@@ -226,23 +232,42 @@ class WebDAVConfigStore:
             loaded = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise WebDAVConfigError("无法读取 WebDAV 本地配置") from exc
-        if not isinstance(loaded, dict) or set(loaded) != set(self._defaults()):
+        if not isinstance(loaded, dict):
             raise WebDAVConfigError("WebDAV 本地配置格式无效")
-        if loaded.get("version") != 1:
-            raise WebDAVConfigError("WebDAV 本地配置版本不兼容")
-        for key in ("server_url", "remote_path", "username", "password"):
-            if not isinstance(loaded[key], str):
+
+        version = loaded.get("version")
+        if version == 1 and set(loaded) == self._legacy_fields():
+            # v1 stored lifecycle switches which no longer exist.  Preserve
+            # every connection and mirror-lineage field, then atomically
+            # rewrite the sidecar so future reads never retain those switches.
+            if (not isinstance(loaded["auto_pull_start"], bool)
+                    or not isinstance(loaded["auto_push_exit"], bool)):
                 raise WebDAVConfigError("WebDAV 本地配置字段无效")
-        if (len(loaded["server_url"]) > 2048 or len(loaded["remote_path"]) > 1000
-                or len(loaded["username"]) > 500 or len(loaded["password"]) > 4096):
-            raise WebDAVConfigError("WebDAV 本地配置字段过长")
-        if not isinstance(loaded["auto_pull_start"], bool) or not isinstance(loaded["auto_push_exit"], bool):
-            raise WebDAVConfigError("WebDAV 自动同步开关无效")
-        if loaded["device_id"] and not _is_uuid4(loaded["device_id"]):
-            raise WebDAVConfigError("WebDAV 设备标识无效")
-        if loaded["last_seen_revision"] is not None and not _is_uuid4(loaded["last_seen_revision"]):
-            raise WebDAVConfigError("WebDAV 同步版本无效")
+            loaded = {
+                key: loaded[key]
+                for key in self._defaults()
+                if key != "version"
+            } | {"version": SIDECAR_VERSION}
+            self._validate_config(loaded)
+            self._write(loaded)
+        elif version != SIDECAR_VERSION or set(loaded) != set(self._defaults()):
+            raise WebDAVConfigError("WebDAV 本地配置格式无效")
+
+        self._validate_config(loaded)
         return loaded
+
+    @staticmethod
+    def _validate_config(config: dict[str, Any]) -> None:
+        for key in ("server_url", "remote_path", "username", "password"):
+            if not isinstance(config[key], str):
+                raise WebDAVConfigError("WebDAV 本地配置字段无效")
+        if (len(config["server_url"]) > 2048 or len(config["remote_path"]) > 1000
+                or len(config["username"]) > 500 or len(config["password"]) > 4096):
+            raise WebDAVConfigError("WebDAV 本地配置字段过长")
+        if config["device_id"] and not _is_uuid4(config["device_id"]):
+            raise WebDAVConfigError("WebDAV 设备标识无效")
+        if config["last_seen_revision"] is not None and not _is_uuid4(config["last_seen_revision"]):
+            raise WebDAVConfigError("WebDAV 同步版本无效")
 
     def _write(self, config: dict[str, Any]) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -298,8 +323,6 @@ class WebDAVConfigStore:
             "remote_path": remote_path,
             "username": config["username"],
             "password_saved": bool(config["password"]),
-            "auto_pull_start": config["auto_pull_start"],
-            "auto_push_exit": config["auto_push_exit"],
             "device_id": config["device_id"] or None,
             "last_seen_revision": config["last_seen_revision"],
         }
@@ -321,22 +344,16 @@ class WebDAVConfigStore:
             password = previous["password"] if not password_value.strip() else password_value
             if not password:
                 raise WebDAVConfigError("WebDAV 密码不能为空")
-            auto_pull = values.get("auto_pull_start", previous["auto_pull_start"])
-            auto_push = values.get("auto_push_exit", previous["auto_push_exit"])
-            if not isinstance(auto_pull, bool) or not isinstance(auto_push, bool):
-                raise WebDAVConfigError("WebDAV 自动同步开关无效")
             device_id = previous["device_id"] or _new_uuid()
             identity_changed = (
                 previous["server_url"], previous["remote_path"], previous["username"]
             ) != (server_url, remote_path, username.strip())
             config = {
-                "version": 1,
+                "version": SIDECAR_VERSION,
                 "server_url": server_url,
                 "remote_path": remote_path,
                 "username": username.strip(),
                 "password": password,
-                "auto_pull_start": auto_pull,
-                "auto_push_exit": auto_push,
                 "device_id": device_id,
                 # A different endpoint/user is a different mirror lineage.
                 # Password rotation alone deliberately keeps sync state.

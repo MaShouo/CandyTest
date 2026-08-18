@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import ipaddress
 import json
 import os
+import secrets
 import threading
+import time
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, redirect, render_template, request, session, url_for
+from werkzeug.security import check_password_hash
 
 from . import CODEX_EFFORTS, MAX_ROUNDS, PI_EFFORTS
 from .cli import cli_availability
@@ -106,18 +112,104 @@ def normalize_proxy(data: dict[str, Any]) -> dict[str, Any]:
     return {"enabled": enabled, "url": proxy_url}
 
 
+def configured_deployment() -> str:
+    deployment = os.environ.get("CANDYTEST_DEPLOYMENT", "local").strip().lower()
+    if deployment not in {"local", "server"}:
+        raise RuntimeError("CANDYTEST_DEPLOYMENT 只能为 local 或 server")
+    return deployment
+
+
 def configured_host() -> str:
-    host = os.environ.get("CANDYTEST_HOST", "127.0.0.1")
-    # The placeholder used by earlier builds is not a bindable address.
-    # Keep it tolerated for existing environments, but use a real loopback host.
-    if host == "[" + "IP]":
-        host = "127.0.0.1"
+    deployment = configured_deployment()
+    host = os.environ.get("CANDYTEST_HOST", "127.0.0.1" if deployment == "local" else "0.0.0.0")
     try:
-        if not ipaddress.ip_address(host).is_loopback:
-            raise ValueError
+        address = ipaddress.ip_address(host)
     except ValueError as exc:
-        raise RuntimeError("CANDYTEST_HOST 必须是回环 IP 地址（例如 127.0.0.1 或 ::1）") from exc
+        raise RuntimeError("CANDYTEST_HOST 必须是有效的 IP 地址") from exc
+    if deployment == "local":
+        if not address.is_loopback:
+            raise RuntimeError("local 模式下 CANDYTEST_HOST 必须是回环 IP 地址（例如 127.0.0.1 或 ::1）")
+    elif address.is_multicast or (address.is_reserved and not address.is_unspecified) or not (
+        address.is_unspecified or address.is_loopback or address.is_private or address.is_global
+    ):
+        raise RuntimeError("server 模式下 CANDYTEST_HOST 必须是未指定、回环、私有或全局 IP，且不能为保留/组播地址")
     return host
+
+
+def _server_auth_config() -> dict[str, Any]:
+    username = os.environ.get("CANDYTEST_ADMIN_USERNAME", "")
+    password_hash = os.environ.get("CANDYTEST_ADMIN_PASSWORD_HASH", "")
+    password_hash_b64 = os.environ.get("CANDYTEST_ADMIN_PASSWORD_HASH_B64", "")
+    secret_key = os.environ.get("CANDYTEST_SECRET_KEY", "")
+    if password_hash and password_hash_b64:
+        raise RuntimeError("server 模式的管理员密码哈希只能配置一种格式")
+    if password_hash_b64:
+        try:
+            password_hash = base64.b64decode(password_hash_b64, validate=True).decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError) as exc:
+            raise RuntimeError("CANDYTEST_ADMIN_PASSWORD_HASH_B64 格式无效") from exc
+    if (not username or username != username.strip() or len(username) > 200
+            or not password_hash or password_hash.count("$") < 2
+            or not password_hash.startswith(("scrypt:", "pbkdf2:"))):
+        raise RuntimeError("server 模式必须配置管理员用户名和有效的 Werkzeug 密码哈希")
+    try:
+        check_password_hash(password_hash, "")
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("CANDYTEST_ADMIN_PASSWORD_HASH 格式无效") from exc
+    if len(secret_key.encode("utf-8")) < 32:
+        raise RuntimeError("server 模式必须配置至少 32 字节强度的 CANDYTEST_SECRET_KEY")
+    raw_secure = os.environ.get("CANDYTEST_COOKIE_SECURE", "1")
+    if raw_secure not in {"0", "1"}:
+        raise RuntimeError("CANDYTEST_COOKIE_SECURE 只能为 0 或 1")
+    return {
+        "username": username,
+        "password_hash": password_hash,
+        "secret_key": secret_key,
+        "cookie_secure": raw_secure == "1",
+    }
+
+
+def _new_csrf_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def _csrf_valid() -> bool:
+    expected = session.get("csrf_token")
+    supplied = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token")
+    return isinstance(expected, str) and isinstance(supplied, str) and secrets.compare_digest(expected, supplied)
+
+
+class LoginRateLimiter:
+    """Small in-process brake for repeated password guessing; no proxy headers trusted."""
+
+    def __init__(self, limit: int = 5, window_seconds: int = 60) -> None:
+        self.limit = limit
+        self.window_seconds = window_seconds
+        self._lock = threading.Lock()
+        self._attempts: dict[str, tuple[int, float]] = {}
+
+    def allowed(self, key: str) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            count, until = self._attempts.get(key, (0, 0.0))
+            if until and now < until:
+                return False
+            if until:
+                self._attempts.pop(key, None)
+            return True
+
+    def failure(self, key: str) -> None:
+        now = time.monotonic()
+        with self._lock:
+            count, until = self._attempts.get(key, (0, 0.0))
+            if until and now < until:
+                return
+            count += 1
+            self._attempts[key] = (count, now + self.window_seconds if count >= self.limit else 0.0)
+
+    def success(self, key: str) -> None:
+        with self._lock:
+            self._attempts.pop(key, None)
 
 
 def configured_port() -> int:
@@ -136,13 +228,12 @@ def _proxy_url(db: Database) -> str | None:
     return proxy["url"] if proxy["enabled"] else None
 
 
-def _record_sync_state(app: Flask, operation: str, status: str, *, automatic: bool,
+def _record_sync_state(app: Flask, operation: str, status: str, *,
                        result: dict[str, Any] | None = None,
                        error: WebDAVSyncError | None = None) -> dict[str, Any]:
     item: dict[str, Any] = {
         "operation": operation,
         "status": status,
-        "automatic": automatic,
         "result": result,
         "error": None if error is None else {"code": error.code, "message": str(error)},
     }
@@ -159,48 +250,22 @@ def sync_runtime_state(app: Flask) -> dict[str, Any] | None:
         return None if last is None else dict(last)
 
 
-def perform_startup_sync(app: Flask) -> dict[str, Any]:
-    """Best-effort startup Pull. Failure is recorded but never blocks startup."""
-    store: WebDAVConfigStore = app.extensions["candytest_webdav_store"]
-    service: WebDAVSyncService = app.extensions["candytest_webdav"]
-    db: Database = app.extensions["candytest_db"]
-    try:
-        config = store.get()
-        if not config["auto_pull_start"]:
-            return _record_sync_state(app, "pull", "disabled", automatic=True)
-        result = service.pull(proxy_url=_proxy_url(db))
-        return _record_sync_state(app, "pull", "completed", automatic=True, result=result)
-    except WebDAVSyncError as exc:
-        return _record_sync_state(app, "pull", "failed", automatic=True, error=exc)
-    except Exception:
-        exc = WebDAVSyncError("启动自动 Pull 发生本地错误，已继续使用本地数据")
-        return _record_sync_state(app, "pull", "failed", automatic=True, error=exc)
-
-
-def perform_shutdown_sync(app: Flask) -> dict[str, Any]:
-    """Best-effort normal-exit Push; a remote conflict is always skipped."""
-    store: WebDAVConfigStore = app.extensions["candytest_webdav_store"]
-    service: WebDAVSyncService = app.extensions["candytest_webdav"]
-    db: Database = app.extensions["candytest_db"]
-    try:
-        config = store.get()
-        if not config["auto_push_exit"]:
-            return _record_sync_state(app, "push", "disabled", automatic=True)
-        result = service.push(force=False, proxy_url=_proxy_url(db))
-        return _record_sync_state(app, "push", "completed", automatic=True, result=result)
-    except WebDAVSyncConflictError as exc:
-        return _record_sync_state(app, "push", "skipped", automatic=True, error=exc)
-    except WebDAVSyncError as exc:
-        return _record_sync_state(app, "push", "failed", automatic=True, error=exc)
-    except Exception:
-        exc = WebDAVSyncError("退出自动 Push 发生本地错误，已跳过")
-        return _record_sync_state(app, "push", "failed", automatic=True, error=exc)
-
-
 def create_app(data_dir: Path | None = None) -> Flask:
+    deployment = configured_deployment()
+    auth = _server_auth_config() if deployment == "server" else None
     app = Flask(__name__)
-    app.config.update(JSON_AS_ASCII=False, MAX_CONTENT_LENGTH=32 * 1024)
+    app.config.update(
+        JSON_AS_ASCII=False,
+        MAX_CONTENT_LENGTH=32 * 1024,
+        SECRET_KEY=auth["secret_key"] if auth else secrets.token_urlsafe(32),
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE="Lax",
+        SESSION_COOKIE_SECURE=auth["cookie_secure"] if auth else False,
+        PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
+    )
     app.json.ensure_ascii = False
+    app.extensions["candytest_deployment"] = deployment
+    app.extensions["candytest_login_limiter"] = LoginRateLimiter()
     db = Database(data_dir)
     manager = JobManager(db)
     webdav_store = WebDAVConfigStore(db.data_dir)
@@ -232,13 +297,92 @@ def create_app(data_dir: Path | None = None) -> Flask:
             status = 500
         return api_error(exc.code, str(exc), status)
 
+    def _login_page(error: str | None = None, status: int = 200):
+        if "csrf_token" not in session:
+            session["csrf_token"] = _new_csrf_token()
+        return render_template("login.html", csrf_token=session["csrf_token"], error=error), status
+
+    @app.after_request
+    def security_headers(response):
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; base-uri 'self'; object-src 'none'; "
+            "frame-ancestors 'none'; form-action 'self'; "
+            "script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'"
+        )
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        if ((deployment == "server" and not request.path.startswith("/static/"))
+                or request.path == "/login" or request.path == "/healthz"
+                or request.path.startswith("/api/")):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.before_request
+    def server_auth_guard():
+        if deployment != "server":
+            return None
+        if request.path in {"/login", "/healthz"} or request.endpoint == "static":
+            return None
+        if not session.get("authenticated"):
+            if request.path.startswith("/api/"):
+                return api_error("AUTH_REQUIRED", "请先登录", 401)
+            return redirect(url_for("login"))
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not _csrf_valid():
+            if request.path.startswith("/api/") or request.path == "/logout" or request.headers.get("X-Requested-With") == "XMLHttpRequest":
+                return api_error("CSRF_FAILED", "请求校验失败，请刷新页面后重试", 403)
+            return _login_page("请求校验失败，请刷新页面后重试。", 403)
+        return None
+
+    @app.route("/login", methods=["GET", "POST"])
+    def login():
+        if deployment != "server":
+            return redirect(url_for("index"))
+        if request.method == "GET":
+            if session.get("authenticated"):
+                return redirect(url_for("index"))
+            return _login_page()
+        if not _csrf_valid():
+            return _login_page("请求校验失败，请刷新页面后重试。", 403)
+        limiter: LoginRateLimiter = app.extensions["candytest_login_limiter"]
+        client_key = request.remote_addr or "unknown"
+        username = request.form.get("username", "")
+        password = request.form.get("password", "")
+        if (not limiter.allowed(client_key) or username != auth["username"]
+                or not check_password_hash(auth["password_hash"], password)):
+            limiter.failure(client_key)
+            return _login_page("用户名或密码错误，或登录尝试过于频繁。", 401)
+        limiter.success(client_key)
+        session.clear()
+        session["authenticated"] = True
+        session["csrf_token"] = _new_csrf_token()
+        session.permanent = True
+        return redirect(url_for("index"))
+
+    @app.post("/logout")
+    def logout():
+        if deployment != "server":
+            return redirect(url_for("index"))
+        # The guard validates this CSRF token before this route is entered.
+        session.clear()
+        return jsonify({"ok": True})
+
+    @app.get("/healthz")
+    def healthz():
+        return jsonify({"status": "ok"})
+
     @app.get("/")
     def index():
-        return render_template("index.html")
+        return render_template(
+            "index.html", deployment=deployment,
+            csrf_token=session.get("csrf_token", "") if deployment == "server" else "",
+        )
 
     @app.get("/api/runtime")
     def runtime():
-        return jsonify({"engines": cli_availability(), "defaults": {"rounds": 5, "reasoning_effort": "low",
+        return jsonify({"engines": cli_availability(), "deployment": deployment,
+                       "defaults": {"rounds": 5, "reasoning_effort": "low",
                        "mode": "parallel", "timeout_seconds": 300}, "data_dir": str(db.data_dir)})
 
     @app.get("/api/settings/proxy")
@@ -282,10 +426,10 @@ def create_app(data_dir: Path | None = None) -> Flask:
     def test_webdav_connection():
         try:
             result = webdav.test_connection(proxy_url=_proxy_url(db))
-            _record_sync_state(app, "test", "completed", automatic=False, result=result)
+            _record_sync_state(app, "test", "completed", result=result)
             return jsonify({"status": result})
         except WebDAVSyncError as exc:
-            _record_sync_state(app, "test", "failed", automatic=False, error=exc)
+            _record_sync_state(app, "test", "failed", error=exc)
             return webdav_error(exc)
 
     @app.get("/api/webdav/status")
@@ -309,10 +453,10 @@ def create_app(data_dir: Path | None = None) -> Flask:
             return api_error("INVALID_FORCE", "force 必须为布尔值")
         try:
             result = webdav.push(force=force, proxy_url=_proxy_url(db))
-            _record_sync_state(app, "push", "completed", automatic=False, result=result)
+            _record_sync_state(app, "push", "completed", result=result)
             return jsonify({"result": result})
         except WebDAVSyncError as exc:
-            _record_sync_state(app, "push", "failed", automatic=False, error=exc)
+            _record_sync_state(app, "push", "failed", error=exc)
             return webdav_error(exc)
 
     @app.post("/api/webdav/pull")
@@ -324,10 +468,10 @@ def create_app(data_dir: Path | None = None) -> Flask:
             return api_error("CONFIRM_REQUIRED", "Pull 会无备份覆盖本地全部数据，请明确确认")
         try:
             result = webdav.pull(proxy_url=_proxy_url(db))
-            _record_sync_state(app, "pull", "completed", automatic=False, result=result)
+            _record_sync_state(app, "pull", "completed", result=result)
             return jsonify({"result": result})
         except WebDAVSyncError as exc:
-            _record_sync_state(app, "pull", "failed", automatic=False, error=exc)
+            _record_sync_state(app, "pull", "failed", error=exc)
             return webdav_error(exc)
 
     @app.get("/api/gateways")
@@ -462,11 +606,7 @@ def main() -> None:
 
     host, port = configured_host(), configured_port()
     app = create_app()
-    perform_startup_sync(app)
-    try:
-        serve(app, host=host, port=port, threads=8)
-    finally:
-        perform_shutdown_sync(app)
+    serve(app, host=host, port=port, threads=8)
 
 
 if __name__ == "__main__":

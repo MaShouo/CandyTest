@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>登录 · CandyTest</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="login-page">
+<main class="login-main">
+  <section class="panel login-panel">
+    <h1>CandyTest</h1>
+    <p class="muted">服务器管理登录</p>
+    {% if error %}<p class="flash error" role="alert">{{ error }}</p>{% endif %}
+    <form method="post" action="{{ url_for('login') }}" class="login-form" autocomplete="on">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>管理员用户名<input name="username" required maxlength="200" autocomplete="username"></label>
+      <label>密码<input name="password" type="password" required autocomplete="current-password"></label>
+      <div class="actions"><button type="submit">登录</button></div>
+    </form>
+  </section>
+</main>
+</body>
+</html>

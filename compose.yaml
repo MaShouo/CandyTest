@@ -1,0 +1,42 @@
+services:
+  candytest:
+    image: candytest:local
+    build:
+      context: .
+      args:
+        PI_VERSION: "${PI_VERSION:-0.84.2}"
+        CODEX_VERSION: "${CODEX_VERSION:-0.147.0}"
+    ports:
+      - "127.0.0.1:${CANDYTEST_PORT:-8765}:8765"
+    environment:
+      CANDYTEST_DEPLOYMENT: server
+      CANDYTEST_HOST: 0.0.0.0
+      CANDYTEST_PORT: 8765
+      CANDYTEST_DATA_DIR: /data
+      CANDYTEST_ADMIN_USERNAME: "${ADMIN_USERNAME:?Set ADMIN_USERNAME in .env}"
+      CANDYTEST_ADMIN_PASSWORD_HASH_B64: "${PASSWORD_HASH_B64:?Set PASSWORD_HASH_B64 in .env}"
+      CANDYTEST_SECRET_KEY: "${SECRET_KEY:?Set SECRET_KEY in .env}"
+      CANDYTEST_COOKIE_SECURE: "${COOKIE_SECURE:-1}"
+    volumes:
+      - candytest-data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=256m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
+    mem_limit: "${CANDYTEST_MEMORY_LIMIT:-2g}"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/opt/venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+volumes:
+  candytest-data:

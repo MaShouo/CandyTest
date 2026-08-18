@@ -3,6 +3,9 @@ setlocal EnableExtensions
 chcp 65001 >nul
 cd /d "%~dp0"
 set "PYTHONUTF8=1"
+rem Windows 一键启动始终使用无需登录的本地回环模式。
+set "CANDYTEST_DEPLOYMENT=local"
+set "CANDYTEST_HOST=127.0.0.1"
 set "VENV_DIR=%~dp0.venv"
 set "VENV_PYTHON=%VENV_DIR%\Scripts\python.exe"
 
@@ -37,7 +40,7 @@ if errorlevel 1 goto install_failed
 
 :start_app
 echo [3/3] 正在启动 CandyTest...
-echo 浏览器将自动打开；请按 Ctrl+C 正常停止服务以执行退出自动 Push，直接关闭窗口不保证同步。
+echo 浏览器将自动打开；如需同步数据，请在页面中手动执行 Push 或 Pull。
 echo.
 "%VENV_PYTHON%" "%~dp0run.py"
 if errorlevel 1 goto app_failed
