@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import sys
 import threading
 import webbrowser
 
@@ -15,19 +14,7 @@ def browser_enabled(deployment: str) -> bool:
     return deployment == "local" and os.environ.get("CANDYTEST_OPEN_BROWSER", "1") != "0"
 
 
-def configure_console() -> None:
-    """Keep status output from crashing under a non-UTF Windows code page."""
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is not None:
-            try:
-                reconfigure(errors="backslashreplace")
-            except (OSError, ValueError):
-                pass
-
-
 def main() -> None:
-    configure_console()
     deployment = configured_deployment()
     host, port = configured_host(deployment), configured_port()
     display_host = f"[{host}]" if ":" in host else host
