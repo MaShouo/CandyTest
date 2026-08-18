@@ -221,6 +221,9 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn('href="{{ url_for(\'settings\') }}"', template)
         self.assertIn('id="pushWebdav"', template)
         self.assertIn('id="pullWebdav"', template)
+        self.assertNotIn('id="webdavInfo"', template)
+        self.assertNotIn('id="webdavStatus"', template)
+        self.assertNotIn('class="panel sync-panel"', template)
         self.assertNotIn('id="webdavForm"', template)
         self.assertNotIn('id="proxyForm"', template)
         self.assertNotIn('innerHTML', source)
@@ -470,6 +473,31 @@ class SchedulingTests(unittest.TestCase):
         self.assertGreaterEqual(max_total, 2)
         self.assertEqual(max_by_site, {"A": 1, "B": 1})
         self.assertEqual(len(self.db.job(job_id)["runs"]), 4)
+
+    def test_failed_api_call_is_saved_but_excluded_from_all_accuracy(self):
+        payload = job_payload()
+        payload["gateway_snapshot"] = json.dumps([{"id": self.sites[0]["id"], "name": self.sites[0]["name"]}])
+        job_id = self.db.create_job(payload)
+        with patch("candytest.jobs.invoke", side_effect=RuntimeError("simulated 429")):
+            self.manager._run_job(job_id, "pi", "serial", 1, "medium", None, [self.sites[0]])
+
+        stored = self.db.job(job_id)
+        self.assertEqual(stored["status"], "completed")
+        self.assertEqual(len(stored["runs"]), 1)
+        self.assertEqual(stored["runs"][0]["status"], "error")
+        self.assertIn("simulated 429", stored["runs"][0]["error"])
+        self.assertEqual(stored["summary"], {
+            "completed": 1, "planned": 1, "graded": 0, "correct": 0,
+            "incorrect": 0, "errors": 1, "cancelled": 0, "accuracy": None,
+        })
+        self.assertEqual(stored["gateways"][0]["graded"], 0)
+        self.assertIsNone(stored["gateways"][0]["accuracy"])
+        history = self.db.history()
+        self.assertEqual(len(history["runs"]), 1)
+        self.assertEqual(history["runs"][0]["status"], "error")
+        self.assertEqual(history["gateways"][0]["errors"], 1)
+        self.assertEqual(history["gateways"][0]["graded"], 0)
+        self.assertIsNone(history["gateways"][0]["accuracy"])
 
     def test_cancel_stops_active_call_and_future_rounds(self):
         entered = threading.Event()

@@ -22,7 +22,7 @@
   }
   function accuracyBadge(value) { const low = value != null && value < 80; return node("span", pct(value), `badge ${low ? "error" : "ok"}`); }
   function runVisual(run) {
-    if (run.status === "error") return { text: "ERROR", className: "warn" };
+    if (run.status === "error") return { text: "API 失败", className: "warn" };
     if (run.status === "cancelled") return { text: "已中断", className: "warn" };
     return { text: run.is_correct ? "正确" : "错误", className: "" };
   }
@@ -41,29 +41,10 @@
   function setEfforts() { const select = $("#effort"), previous = select.value || "low"; clear(select, efforts[$("#engine").value].map(value => { const o = node("option", value); o.value = value; if (value === previous || (!efforts[$("#engine").value].includes(previous) && value === "low")) o.selected = true; return o; })); }
   function renderEngines() { const el = $("#engineStatus"); const engines = state.runtime.engines; clear(el, ["pi", "codex"].map(name => node("span", `${name}: ${engines[name] ? "可用" : "未安装"}`, `badge ${engines[name] ? "ok" : "error"}`))); const select = $("#engine"); for (const option of select.options) option.disabled = !engines[option.value]; if (select.selectedOptions[0]?.disabled) select.value = engines.pi ? "pi" : "codex"; setEfforts(); $("#startJob").disabled = !engines.pi && !engines.codex; }
   function shortRevision(value) { return value ? `${value.slice(0, 8)}…` : "无"; }
-  function webdavLastText(last) {
-    if (!last) return "尚未执行同步。";
-    const names = { pull: "Pull", push: "Push", test: "连接测试" };
-    const statuses = { completed: "完成", failed: "失败" };
-    const suffix = last.result?.revision ? ` · revision ${shortRevision(last.result.revision)}` : last.error?.message ? ` · ${last.error.message}` : "";
-    return `${names[last.operation] || last.operation}：${statuses[last.status] || last.status}${suffix}`;
-  }
-  function renderWebdav(settings, last = null) {
-    state.webdav = settings;
-    const badge = $("#webdavStatus"); badge.textContent = settings.configured ? "已配置" : "未配置"; badge.className = `badge ${settings.configured ? "ok" : ""}`;
-    $("#webdavInfo").textContent = `${webdavLastText(last)} · 本机已见 revision：${shortRevision(settings.last_seen_revision)}`;
-    updateSyncControls();
-  }
-  async function loadWebdav() { const data = await api("/api/settings/webdav"); renderWebdav(data.webdav, data.last_operation); }
+  function renderWebdav(settings) { state.webdav = settings; updateSyncControls(); }
+  async function loadWebdav() { const data = await api("/api/settings/webdav"); renderWebdav(data.webdav); }
   function updateSyncControls() { for (const id of ["#pushWebdav", "#pullWebdav"]) $(id).disabled = state.syncBusy || !state.webdav?.configured; }
   function setSyncBusy(busy) { state.syncBusy = busy; updateSyncControls(); }
-  function renderWebdavRemote(status, last = null) {
-    const badge = $("#webdavStatus");
-    badge.textContent = !status.configured ? "未配置" : status.reachable ? status.conflict ? "有冲突" : "远端可用" : "连接失败";
-    badge.className = `badge ${status.reachable && !status.conflict ? "ok" : status.configured ? "error" : ""}`;
-    const remote = `远端 revision：${shortRevision(status.remote_revision)} · 本机已见：${shortRevision(status.last_seen_revision)}`;
-    $("#webdavInfo").textContent = `${remote}${status.error ? ` · ${status.error.message}` : ""}${last ? ` · ${webdavLastText(last)}` : ""}`;
-  }
   function renderGateways() {
     const tbody = $("#gatewayRows");
     const selected = new Set([...tbody.querySelectorAll("input[type=checkbox]:checked")].map(item => Number(item.value)));
@@ -96,22 +77,22 @@
     div.append(node("h3", site.gateway_name || site.name));
     div.append(node("strong", pct(site.accuracy)));
     if (historical) {
-      div.append(node("p", `正确 ${site.correct || 0} / 已判分 ${site.graded || 0} · ERROR ${site.errors || 0} · 中断 ${site.cancelled || 0}`));
+      div.append(node("p", `正确 ${site.correct || 0} / 已判分 ${site.graded || 0} · API 失败 ${site.errors || 0}（不计正确率） · 中断 ${site.cancelled || 0}`));
     } else {
       div.append(node("p", `进度 ${site.completed || 0} / ${rounds ?? "—"}`));
-      div.append(node("p", `本任务：正确 ${site.correct || 0} / 已判分 ${site.graded || 0} · ERROR ${site.errors || 0} · 中断 ${site.cancelled || 0}`));
-      div.append(node("p", `历史：${pct(site.historical_accuracy)}（${site.historical_correct || 0} / ${site.historical_graded || 0}，ERROR ${site.historical_errors || 0}，中断 ${site.historical_cancelled || 0}）`));
+      div.append(node("p", `本任务：正确 ${site.correct || 0} / 已判分 ${site.graded || 0} · API 失败 ${site.errors || 0}（不计正确率） · 中断 ${site.cancelled || 0}`));
+      div.append(node("p", `历史：${pct(site.historical_accuracy)}（${site.historical_correct || 0} / ${site.historical_graded || 0}，API 失败 ${site.historical_errors || 0} 不计正确率，中断 ${site.historical_cancelled || 0}）`));
     }
     if (currentLow) div.append(node("p", historical ? "历史正确率低于 80%，请重点复核。" : "当前正确率低于 80%，请重点复核。", "warn"));
     if (historyLow) div.append(node("p", "历史正确率低于 80%，请重点复核。", "warn"));
-    if ((site.errors || 0) > 0) div.append(node("p", `${site.errors} 轮 ERROR（不计入正确率）`, "warn"));
+    if ((site.errors || 0) > 0) div.append(node("p", `${site.errors} 次 API 调用失败；记录已保存，不计入正确率。`, "warn"));
     return div;
   }
   function renderJob(job) {
     updateJobControls(job);
-    if (!job) { $("#jobCaption").textContent = "尚未运行测试。"; $("#jobSummary").textContent = "—"; clear($("#jobStats")); const td = node("td", "暂无测试记录", "empty"); td.colSpan = 9; const tr = document.createElement("tr"); tr.append(td); clear($("#runRows"), [tr]); return; }
+    if (!job) { $("#jobCaption").textContent = "尚未运行测试。API 调用失败会保存记录，但不计入正确率。"; $("#jobSummary").textContent = "—"; clear($("#jobStats")); const td = node("td", "暂无测试记录", "empty"); td.colSpan = 9; const tr = document.createElement("tr"); tr.append(td); clear($("#runRows"), [tr]); return; }
     $("#jobCaption").textContent = `任务 #${job.id} · ${job.engine} · ${job.mode === "parallel" ? "并行" : "串行"} · 每站 ${job.rounds} 轮 · ${jobStatus(job.status)}`;
-    const summary = $("#jobSummary"); summary.textContent = `总正确率 ${pct(job.summary.accuracy)} · ${job.summary.correct}/${job.summary.graded} · ERROR ${job.summary.errors} · 中断 ${job.summary.cancelled || 0} · 进度 ${job.summary.completed}/${job.summary.planned}`; summary.className = `metric ${job.summary.accuracy != null && job.summary.accuracy < 80 ? "low" : ""}`;
+    const summary = $("#jobSummary"); summary.textContent = `总正确率 ${pct(job.summary.accuracy)} · ${job.summary.correct}/${job.summary.graded} · API 失败 ${job.summary.errors}（不计正确率） · 中断 ${job.summary.cancelled || 0} · 进度 ${job.summary.completed}/${job.summary.planned}`; summary.className = `metric ${job.summary.accuracy != null && job.summary.accuracy < 80 ? "low" : ""}`;
     clear($("#jobStats"), job.gateways.map(site => statCard(site, false, job.rounds)));
     const opened = openDetailKeys($("#runRows"));
     const rows = job.runs.map(run => { const tr = document.createElement("tr"), visual = runVisual(run); tr.append(node("td", run.gateway_name), node("td", String(run.round_number)), node("td", visual.text, visual.className), node("td", run.elapsed_seconds == null ? "—" : `${run.elapsed_seconds.toFixed(2)}s`), node("td", num(run.input_tokens)), node("td", num(run.output_tokens)), node("td", num(run.reasoning_tokens)), node("td", num(run.total_tokens))); const d = node("td"); d.append(details(run.answer, run.error, `job-${job.id}-run-${run.id}`, opened)); tr.append(d); return tr; });
