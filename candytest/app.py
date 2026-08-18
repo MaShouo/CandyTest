@@ -93,34 +93,18 @@ def normalize_proxy(data: dict[str, Any]) -> dict[str, Any]:
     return {"enabled": enabled, "url": proxy_url}
 
 
-def configured_deployment() -> str:
-    deployment = os.environ.get("CANDYTEST_DEPLOYMENT", "local")
-    if deployment not in {"local", "server"}:
-        raise RuntimeError("CANDYTEST_DEPLOYMENT 只能是 local 或 server")
-    return deployment
-
-
-def configured_host(deployment: str | None = None) -> str:
-    deployment = deployment or configured_deployment()
-    default_host = "127.0.0.1" if deployment == "local" else "0.0.0.0"
-    host = os.environ.get("CANDYTEST_HOST", default_host)
+def configured_host() -> str:
+    host = os.environ.get("CANDYTEST_HOST", "127.0.0.1")
+    # The placeholder used by earlier builds is not a bindable address.
+    # Keep it tolerated for existing environments, but use a real loopback host.
+    if host == "[" + "IP]":
+        host = "127.0.0.1"
     try:
-        address = ipaddress.ip_address(host)
+        if not ipaddress.ip_address(host).is_loopback:
+            raise ValueError
     except ValueError as exc:
-        raise RuntimeError("CANDYTEST_HOST 必须是合法的 IP 地址") from exc
-
-    if deployment == "local":
-        if not address.is_loopback:
-            raise RuntimeError("local 模式下 CANDYTEST_HOST 只能是回环 IP 地址（例如 127.0.0.1 或 ::1）")
-    elif address.is_multicast or (
-        address.is_reserved and not (address.is_unspecified or address.is_loopback)
-    ) or not (
-        address.is_unspecified or address.is_loopback or address.is_private or address.is_global
-    ):
-        raise RuntimeError(
-            "server 模式下 CANDYTEST_HOST 不能使用组播或保留地址"
-        )
-    return str(address)
+        raise RuntimeError("CANDYTEST_HOST 必须是回环 IP 地址（例如 127.0.0.1 或 ::1）") from exc
+    return host
 
 
 def configured_port() -> int:
@@ -135,7 +119,6 @@ def configured_port() -> int:
 
 
 def create_app(data_dir: Path | None = None) -> Flask:
-    deployment = configured_deployment()
     app = Flask(__name__)
     app.config.update(JSON_AS_ASCII=False, MAX_CONTENT_LENGTH=32 * 1024)
     app.json.ensure_ascii = False
@@ -144,32 +127,13 @@ def create_app(data_dir: Path | None = None) -> Flask:
     app.extensions["candytest_db"] = db
     app.extensions["candytest_jobs"] = manager
 
-    @app.after_request
-    def add_security_headers(response):
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; "
-            "connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; "
-            "frame-ancestors 'none'; form-action 'self'"
-        )
-        if request.path.startswith("/api/") or request.path == "/healthz":
-            response.headers["Cache-Control"] = "no-store"
-        return response
-
     @app.get("/")
     def index():
-        return render_template("index.html", deployment=deployment)
-
-    @app.get("/healthz")
-    def healthz():
-        return jsonify({"status": "ok"})
+        return render_template("index.html")
 
     @app.get("/api/runtime")
     def runtime():
-        return jsonify({"deployment": deployment, "engines": cli_availability(), "defaults": {"rounds": 5, "reasoning_effort": "low",
+        return jsonify({"engines": cli_availability(), "defaults": {"rounds": 5, "reasoning_effort": "low",
                        "mode": "parallel", "timeout_seconds": 300}, "data_dir": str(db.data_dir)})
 
     @app.get("/api/settings/proxy")
@@ -305,8 +269,7 @@ def create_app(data_dir: Path | None = None) -> Flask:
 def main() -> None:
     from waitress import serve
 
-    deployment = configured_deployment()
-    host, port = configured_host(deployment), configured_port()
+    host, port = configured_host(), configured_port()
     serve(create_app(), host=host, port=port, threads=8)
 
 

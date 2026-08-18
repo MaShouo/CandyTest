@@ -6,13 +6,9 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-<header class="topbar"><div><h1>CandyTest</h1>{% if deployment == 'server' %}<p>中转站 GPT 智商检测 · 服务器执行</p>{% else %}<p>中转站 GPT 智商检测 · 本地执行</p>{% endif %}</div><div id="engineStatus" class="engine-status"></div></header>
+<header class="topbar"><div><h1>CandyTest</h1><p>中转站 GPT 智商检测 · 本地执行</p></div><div id="engineStatus" class="engine-status"></div></header>
 <main>
-  {% if deployment == 'server' %}
-  <section class="notice"><strong>服务器安全提示：</strong>API Key 会以<strong>服务器数据库明文</strong>保存。<strong>必须通过 HTTPS 认证反代访问</strong>，请勿直接将 CandyTest 监听端口暴露到公网。</section>
-  {% else %}
-  <section class="notice"><strong>安全提示：</strong>API Key 会以<strong>本地明文</strong>保存在当前用户数据目录；服务仅监听<strong>回环地址</strong>。请勿在共享帐户中保存生产密钥。</section>
-  {% endif %}
+  <section class="notice"><strong>安全提示：</strong>API Key 会以<strong>本地明文</strong>保存在当前用户数据目录；服务只监听回环地址。请勿在共享帐户中保存生产密钥。</section>
   <p id="flash" class="flash" role="status"></p>
 
   <section class="panel"><div class="section-title"><div><h2>Clash 网络代理</h2><p>全局应用于后续启动的 pi/Codex 测试；支持 Clash HTTP/HTTPS 代理端口。</p></div><span id="proxyStatus" class="badge">未启用</span></div>
@@ -32,7 +28,7 @@
       <label>显示名称<input name="name" required maxlength="100" placeholder="例如：主中转站"></label>
       <label>默认模型<input name="model" required maxlength="300" placeholder="例如：gpt-4.1"></label>
       <label class="full">Responses API base URL<input name="base_url" required type="url" maxlength="2000" placeholder="https://example.com/v1"><small>保留您填写的路径；不会自动追加 /v1。HTTP 地址可以保存，但传输不安全。</small></label>
-      <label class="full">API Key<input name="api_key" type="password" maxlength="2000" placeholder="编辑时留空则保留已保存的 Key"><small>{% if deployment == 'server' %}仅保存在服务器数据库，绝不会由查询接口回传；请确保 HTTPS 认证反代已启用。{% else %}仅保存在本机数据库，绝不会由查询接口回传。{% endif %}</small></label>
+      <label class="full">API Key<input name="api_key" type="password" maxlength="2000" placeholder="编辑时留空则保留已保存的 Key"><small>仅保存在本机数据库，绝不会由查询接口回传。</small></label>
       <label class="check"><input name="enabled" type="checkbox" checked> 启用此中转站</label>
       <div class="full actions"><button type="submit">保存中转站</button></div>
     </form>
