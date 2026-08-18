@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CandyTest · 中转站 GPT 智商检测</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header class="topbar"><div><h1>CandyTest</h1><p>中转站 GPT 智商检测 · 本地执行</p></div><div id="engineStatus" class="engine-status"></div></header>
+<main>
+  <section class="notice"><strong>安全提示：</strong>API Key 会以<strong>本地明文</strong>保存在当前用户数据目录；服务只监听回环地址。请勿在共享帐户中保存生产密钥。</section>
+  <p id="flash" class="flash" role="status"></p>
+
+  <section class="panel"><div class="section-title"><div><h2>Clash 网络代理</h2><p>全局应用于后续启动的 pi/Codex 测试；支持 Clash HTTP/HTTPS 代理端口。</p></div><span id="proxyStatus" class="badge">未启用</span></div>
+    <form id="proxyForm" class="proxy-controls" autocomplete="off">
+      <label class="check"><input name="enabled" id="proxyEnabled" type="checkbox"> 启用全局代理</label>
+      <label class="proxy-url">代理 URL<input name="url" id="proxyUrl" type="url" maxlength="2000" placeholder="http://localhost:7890"><small>填写 Clash 的 HTTP 代理端口，格式为 http://主机:端口；不支持 SOCKS5 或代理认证。</small></label>
+      <div class="actions"><button type="submit">保存代理设置</button></div>
+    </form>
+  </section>
+
+  <section class="panel"><div class="section-title"><div><h2>中转站</h2><p>选择一个或多个启用站点；URL 应为 OpenAI 兼容 Responses API 地址。</p></div><button id="newGateway" class="secondary">添加中转站</button></div>
+    <div class="table-wrap"><table><thead><tr><th></th><th>名称</th><th>Responses API URL</th><th>默认模型</th><th>API Key</th><th>历史正确率</th><th>操作</th></tr></thead><tbody id="gatewayRows"></tbody></table></div>
+  </section>
+
+  <section class="panel" id="gatewayPanel" hidden><div class="section-title"><h2 id="gatewayTitle">添加中转站</h2><button id="cancelGateway" class="link">取消</button></div>
+    <form id="gatewayForm" class="form-grid" autocomplete="off">
+      <label>显示名称<input name="name" required maxlength="100" placeholder="例如：主中转站"></label>
+      <label>默认模型<input name="model" required maxlength="300" placeholder="例如：gpt-4.1"></label>
+      <label class="full">Responses API base URL<input name="base_url" required type="url" maxlength="2000" placeholder="https://example.com/v1"><small>保留您填写的路径；不会自动追加 /v1。HTTP 地址可以保存，但传输不安全。</small></label>
+      <label class="full">API Key<input name="api_key" type="password" maxlength="2000" placeholder="编辑时留空则保留已保存的 Key"><small>仅保存在本机数据库，绝不会由查询接口回传。</small></label>
+      <label class="check"><input name="enabled" type="checkbox" checked> 启用此中转站</label>
+      <div class="full actions"><button type="submit">保存中转站</button></div>
+    </form>
+  </section>
+
+  <section class="panel"><div class="section-title"><div><h2>开始测试</h2><p>并行：站点之间同时测试，单个站点内仍逐轮执行。串行：所有站点和轮次按选择顺序执行。</p></div></div>
+    <form id="jobForm" class="controls">
+      <label>CLI 引擎<select name="engine" id="engine"><option value="pi">pi</option><option value="codex">Codex</option></select></label>
+      <label>每站轮数<input name="rounds" type="number" min="1" max="100" value="5" required></label>
+      <label>Reasoning effort<select name="reasoning_effort" id="effort"></select></label>
+      <label>模型覆盖（可选）<input name="model_override" maxlength="300" placeholder="留空使用各站默认模型"></label>
+      <label>调度方式<select name="mode"><option value="parallel">并行（默认）</option><option value="serial">串行</option></select></label>
+      <div class="actions"><button id="startJob" type="submit">开始测试</button></div>
+    </form>
+  </section>
+
+  <section class="panel"><div class="section-title"><div><h2>当前任务</h2><p id="jobCaption">尚未运行测试。</p></div><div class="current-actions"><span id="jobSummary" class="metric">—</span><button id="stopJob" type="button" class="stop" hidden>中断测试</button></div></div>
+    <div id="jobStats" class="stat-grid"></div>
+    <div class="table-wrap"><table><thead><tr><th>站点</th><th>轮次</th><th>状态</th><th>耗时</th><th>Input</th><th>Output</th><th>Reasoning</th><th>Total</th><th>详情</th></tr></thead><tbody id="runRows"><tr><td colspan="9" class="empty">暂无测试记录</td></tr></tbody></table></div>
+  </section>
+
+  <section class="panel"><div class="section-title"><div><h2>历史正确率</h2><p>仅按中转站聚合，跨模型、CLI 和任务汇总；ERROR 不计入正确率分母。</p></div><button id="clearHistory" class="danger secondary">清空历史</button></div>
+    <div id="historyStats" class="stat-grid"></div>
+    <details><summary>最近 100 条历史运行记录</summary><div class="table-wrap"><table><thead><tr><th>站点</th><th>引擎</th><th>轮次</th><th>状态</th><th>正确</th><th>耗时</th><th>时间</th><th>详情</th></tr></thead><tbody id="historyRows"></tbody></table></div></details>
+  </section>
+</main>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body></html>
