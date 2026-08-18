@@ -1,0 +1,29 @@
+# Environment substitutions are resolved by Caddy when it starts. Do not replace
+# these with literal credentials in this file.
+{
+	email {$CADDY_ACME_EMAIL}
+}
+
+{$CANDYTEST_DOMAIN} {
+	encode zstd gzip
+
+	# Caddy 2.8 basic_auth syntax: username followed by a bcrypt password hash.
+	basic_auth {
+		{$CADDY_BASIC_AUTH_USER} {$CADDY_BASIC_AUTH_HASH}
+	}
+
+	# Protect every route, including /healthz, before proxying to the private app.
+	# Do not forward the browser's Basic credential to CandyTest.
+	reverse_proxy candytest:8765 {
+		header_up -Authorization
+	}
+
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+	}
+}

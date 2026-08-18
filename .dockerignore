@@ -1,0 +1,49 @@
+# Source control and CI
+.git/
+.github/
+.gitignore
+
+# Local Python environments, tests, and caches
+.venv/
+venv/
+env/
+tests/
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Persistent application data and SQLite sidecars
+.candytest/
+*.sqlite3
+*.sqlite3-*
+*.sqlite3-shm
+*.sqlite3-wal
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Logs, temporary files, and editor/OS files
+*.log
+*.tmp
+*.temp
+.tmp/
+tmp/
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Not needed in the production runtime image
+start.bat
+README-WINDOWS.md

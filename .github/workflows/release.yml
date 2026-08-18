@@ -1,0 +1,160 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Verify release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate semantic version tag
+        shell: bash
+        run: |
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release tag must look like v1.2.3 or v1.2.3-rc.1" >&2
+            exit 1
+          fi
+
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Compile Python sources
+        run: python -m compileall -q candytest run.py tests
+
+      - name: Run offline tests
+        run: python -m unittest discover -s tests -v
+
+  package-local:
+    name: Package Windows local edition
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+
+      - name: Build local-only ZIP
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tag = "${{ github.ref_name }}"
+          $packageName = "CandyTest-local-windows-x64-$tag"
+          $stage = Join-Path $env:RUNNER_TEMP $packageName
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item candytest -Destination (Join-Path $stage "candytest") -Recurse
+          Copy-Item run.py, start.bat, requirements.txt -Destination $stage
+          Copy-Item README-WINDOWS.md -Destination (Join-Path $stage "README.md")
+          Get-ChildItem -Path $stage -Directory -Recurse -Filter "__pycache__" |
+            Remove-Item -Recurse -Force
+          Get-ChildItem -Path $stage -File -Recurse -Include "*.pyc", "*.pyo" |
+            Remove-Item -Force
+          Set-Content -Path (Join-Path $stage "VERSION.txt") -Value "$tag`n" -Encoding ascii
+
+          $archive = Join-Path $PWD "$packageName.zip"
+          Compress-Archive -Path $stage -DestinationPath $archive -CompressionLevel Optimal
+          $digest = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          Set-Content -Path "$archive.sha256" -Value "$digest  $packageName.zip`n" -Encoding ascii
+
+      - name: Upload local package
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-windows-release
+          path: |
+            CandyTest-local-windows-x64-*.zip
+            CandyTest-local-windows-x64-*.zip.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-image:
+    name: Publish server image to GHCR
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+
+      - name: Normalize image name
+        id: image
+        shell: bash
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.name }}
+          flavor: latest=auto
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: mode=max
+          sbom: true
+
+  create-release:
+    name: Create GitHub Release
+    needs: [package-local, publish-image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download local package
+        uses: actions/download-artifact@v4
+        with:
+          name: local-windows-release
+          path: dist
+
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: >-
+          gh release create "$TAG"
+          dist/CandyTest-local-windows-x64-*.zip
+          dist/CandyTest-local-windows-x64-*.zip.sha256
+          --generate-notes
+          --title "CandyTest $TAG"

@@ -3,6 +3,10 @@ setlocal EnableExtensions
 chcp 65001 >nul
 cd /d "%~dp0"
 set "PYTHONUTF8=1"
+rem The one-click package is always local-only. A stale system environment
+rem must never switch it into unauthenticated server mode.
+set "CANDYTEST_DEPLOYMENT=local"
+set "CANDYTEST_HOST=127.0.0.1"
 set "VENV_DIR=%~dp0.venv"
 set "VENV_PYTHON=%VENV_DIR%\Scripts\python.exe"
 
