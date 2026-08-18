@@ -18,11 +18,30 @@ class JobManager:
         self._lock = threading.Lock()
         self._active_id: int | None = None
         self._cancel_event: threading.Event | None = None
+        self._sync_reserved = False
+
+    def reserve_sync(self) -> bool:
+        """Atomically reserve the process for one WebDAV operation."""
+        with self._lock:
+            if self._sync_reserved or self._active_id is not None or self.db.active_job() is not None:
+                return False
+            self._sync_reserved = True
+            return True
+
+    def release_sync(self) -> None:
+        with self._lock:
+            self._sync_reserved = False
+
+    def sync_reserved(self) -> bool:
+        with self._lock:
+            return self._sync_reserved
 
     def start(self, engine: str, mode: str, rounds: int, effort: str,
               model_override: str | None, gateways: list[dict[str, Any]],
               proxy_url: str | None = None) -> int:
         with self._lock:
+            if self._sync_reserved:
+                raise RuntimeError("WebDAV 同步进行中，暂时不能启动测试")
             if self._active_id is not None or self.db.active_job() is not None:
                 raise RuntimeError("已有测试任务正在运行")
             snapshot = [{"id": site["id"], "name": site["name"]} for site in gateways]

@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sqlite3
+import stat
+import tempfile
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+
+CURRENT_SCHEMA_VERSION = 2
+REQUIRED_SNAPSHOT_TABLES = frozenset({"gateways", "test_jobs", "test_runs", "app_settings"})
 
 
 def utcnow() -> str:
@@ -21,6 +29,7 @@ def default_data_dir() -> Path:
 
 class Database:
     def __init__(self, data_dir: Path | None = None) -> None:
+        self._lock = threading.RLock()
         self.data_dir = data_dir or default_data_dir()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         try:
@@ -36,14 +45,159 @@ class Database:
 
     @contextmanager
     def connect(self):
-        conn = sqlite3.connect(self.path, timeout=15, isolation_level=None)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA busy_timeout = 10000")
+        # Keep the lock for the complete connection lifecycle.  In particular,
+        # snapshot restore must not replace the database beneath an in-flight
+        # request connection.
+        with self._lock:
+            conn = sqlite3.connect(self.path, timeout=15, isolation_level=None)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute("PRAGMA busy_timeout = 10000")
+            try:
+                yield conn
+            finally:
+                conn.close()
+
+    @staticmethod
+    def _fsync_file(path: Path) -> None:
+        fd = os.open(path, os.O_RDWR)
         try:
-            yield conn
+            os.fsync(fd)
         finally:
-            conn.close()
+            os.close(fd)
+
+    @staticmethod
+    def _chmod_database(path: Path) -> None:
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _sidecar_paths(path: Path) -> tuple[Path, Path]:
+        return Path(f"{path}-wal"), Path(f"{path}-shm")
+
+    def validate_snapshot(self, snapshot_path: Path | str) -> None:
+        """Reject anything except a complete snapshot for this schema version."""
+        snapshot = Path(snapshot_path)
+        try:
+            info = snapshot.stat()
+            if not stat.S_ISREG(info.st_mode) or info.st_size < 100:
+                raise ValueError("快照不是有效的 SQLite 数据库文件")
+            with snapshot.open("rb") as handle:
+                if handle.read(16) != b"SQLite format 3\x00":
+                    raise ValueError("快照不是有效的 SQLite 数据库文件")
+        except OSError as exc:
+            raise ValueError("无法读取数据库快照") from exc
+
+        # immutable + mode=ro guarantees validation neither mutates the input
+        # nor accidentally creates a database for a malformed path.
+        try:
+            uri = f"{snapshot.resolve().as_uri()}?mode=ro&immutable=1"
+            conn = sqlite3.connect(uri, uri=True, timeout=15, isolation_level=None)
+            try:
+                integrity_rows = conn.execute("PRAGMA integrity_check").fetchall()
+                if [row[0] for row in integrity_rows] != ["ok"]:
+                    raise ValueError("数据库快照完整性校验失败")
+                version = conn.execute("PRAGMA user_version").fetchone()[0]
+                if version != CURRENT_SCHEMA_VERSION:
+                    raise ValueError(
+                        f"数据库快照版本不兼容：需要 {CURRENT_SCHEMA_VERSION}，实际 {version}"
+                    )
+                table_rows = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+                tables = {row[0] for row in table_rows}
+                if not REQUIRED_SNAPSHOT_TABLES.issubset(tables):
+                    raise ValueError("数据库快照缺少必要的数据表")
+            finally:
+                conn.close()
+        except ValueError:
+            raise
+        except sqlite3.Error as exc:
+            raise ValueError("数据库快照无法以只读模式打开") from exc
+
+    def create_snapshot(self, snapshot_path: Path | str) -> Path:
+        """Create a durable single-file SQLite backup, including committed WAL data."""
+        snapshot = Path(snapshot_path)
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        if snapshot.resolve() == self.path.resolve():
+            raise ValueError("快照路径不能是当前数据库")
+
+        with self._lock:
+            for path in (snapshot, *self._sidecar_paths(snapshot)):
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+            with self.connect() as source:
+                destination = sqlite3.connect(snapshot, timeout=15, isolation_level=None)
+                try:
+                    source.backup(destination)
+                finally:
+                    destination.close()
+            self.validate_snapshot(snapshot)
+            self._fsync_file(snapshot)
+            self._chmod_database(snapshot)
+        return snapshot
+
+    def restore_snapshot(self, snapshot_path: Path | str) -> None:
+        """Atomically replace the local database with a validated snapshot.
+
+        No backup is made here: callers intentionally choose complete-mirror
+        semantics.  Until os.replace succeeds, the current local database is
+        untouched.
+        """
+        snapshot = Path(snapshot_path)
+        if snapshot.resolve() == self.path.resolve():
+            raise ValueError("不能用当前数据库恢复自身")
+
+        temporary_path: Path | None = None
+        with self._lock:
+            self.validate_snapshot(snapshot)
+            with self.connect() as conn:
+                checkpoint = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                if checkpoint and checkpoint[0]:
+                    raise RuntimeError("无法完成本地数据库 checkpoint，拒绝恢复")
+
+            # Remove WAL/SHM before replacement. If either is still locked,
+            # abort while the current database is untouched.
+            for sidecar in self._sidecar_paths(self.path):
+                try:
+                    sidecar.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    raise RuntimeError("无法清理本地数据库 sidecar，拒绝恢复") from exc
+
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=".candytest-restore-", suffix=".sqlite3", dir=self.data_dir
+            )
+            os.close(descriptor)
+            temporary_path = Path(temporary_name)
+            try:
+                shutil.copyfile(snapshot, temporary_path)
+                self._fsync_file(temporary_path)
+                self.validate_snapshot(temporary_path)
+                self._chmod_database(temporary_path)
+                os.replace(temporary_path, self.path)
+                temporary_path = None
+                # A new sidecar should not exist while no connection is open;
+                # ignore cleanup races after the irreversible replace rather
+                # than reporting a failed restore after the new DB is active.
+                for sidecar in self._sidecar_paths(self.path):
+                    try:
+                        sidecar.unlink()
+                    except OSError:
+                        pass
+                self.initialize()
+                self._chmod_database(self.path)
+            finally:
+                if temporary_path is not None:
+                    try:
+                        temporary_path.unlink()
+                    except FileNotFoundError:
+                        pass
 
     def initialize(self) -> None:
         with self.connect() as conn:
@@ -96,7 +250,7 @@ class Database:
                 CREATE INDEX idx_runs_gateway ON test_runs(gateway_id, created_at);
                 PRAGMA user_version = 1;
                 """)
-            if version < 2:
+            if version < CURRENT_SCHEMA_VERSION:
                 conn.executescript("""
                 CREATE TABLE IF NOT EXISTS app_settings (
                     key TEXT PRIMARY KEY,

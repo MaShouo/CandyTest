@@ -28,7 +28,7 @@ if errorlevel 1 goto venv_failed
 echo [2/3] 正在检查运行依赖...
 "%VENV_PYTHON%" -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>nul
 if errorlevel 1 goto python_version_failed
-"%VENV_PYTHON%" -c "import flask, waitress" >nul 2>nul
+"%VENV_PYTHON%" -c "import flask, waitress, requests" >nul 2>nul
 if not errorlevel 1 goto start_app
 
 echo 检测到首次运行或依赖不完整，正在安装...
@@ -37,7 +37,7 @@ if errorlevel 1 goto install_failed
 
 :start_app
 echo [3/3] 正在启动 CandyTest...
-echo 浏览器将自动打开；关闭本窗口即可停止服务。
+echo 浏览器将自动打开；请按 Ctrl+C 正常停止服务以执行退出自动 Push，直接关闭窗口不保证同步。
 echo.
 "%VENV_PYTHON%" "%~dp0run.py"
 if errorlevel 1 goto app_failed

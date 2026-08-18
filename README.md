@@ -10,7 +10,7 @@ CandyTest 是一个仅在本机回环地址上运行的轻量 Web 页面，用�
 
 ## 环境与安装
 
-需要 Python 3.10 或更高版本。项目本身仅使用 Python、Flask、纯 Python 的 Waitress WSGI 服务、SQLite 与原生前端；**不会编译 Rust，也不会产生 Rust 构建产物**。Codex 若已安装，可能是其自身的外部程序，本项目不会构建它。
+需要 Python 3.10 或更高版本。项目本身使用 Python、Flask、纯 Python 的 Waitress/Requests、SQLite 与原生前端；**不会编译 Rust，也不会产生 Rust 构建产物**。Codex 若已安装，可能是其自身的外部程序，本项目不会构建它。
 
 ### Windows 一键启动
 
@@ -21,7 +21,7 @@ CandyTest 是一个仅在本机回环地址上运行的轻量 Web 页面，用�
 3. 检查并安装缺失依赖；
 4. 启动 CandyTest 并自动打开浏览器。
 
-关闭启动脚本的窗口即可停止服务。也可以按下面的步骤手动启动。
+关闭启动脚本的窗口可能直接终止进程，**不能保证退出自动 Push**；需要正常同步退出时请在窗口中按 `Ctrl+C`。也可以按下面的步骤手动启动。
 
 Windows PowerShell 示例：
 
@@ -68,6 +68,64 @@ http://localhost:7890
 - 关闭代理后，新任务会清除继承的代理环境变量并直接连接。
 - 已经运行中的任务使用启动时的代理快照，不会因中途修改设置而改变。
 - 代理配置保存在同一个本地 SQLite 数据库中。
+- WebDAV 同步请求也使用该代理；运行中的同步使用开始时的本地代理设置。
+
+## WebDAV 完整同步
+
+页面顶部可配置一个使用 **Basic Auth** 的 WebDAV。同步单位是完整 SQLite 数据库快照，因此会一起同步：
+
+- 中转站及明文 API Key；
+- Clash 代理设置；
+- 已完成、失败和取消的任务；
+- 每轮完整回答、错误、耗时和 token；
+- 软删除记录和其他数据库设置。
+
+WebDAV 连接本身保存在本机：
+
+```text
+~/.candytest/webdav.json
+```
+
+其中包含 WebDAV URL、用户名和明文密码，但查询 API/页面不会返回密码。`webdav.json` 不会被上传，否则另一台设备将无法独立选择自己的 WebDAV 凭据和自动同步开关。
+
+### 远端布局
+
+```text
+<远端目录>/
+├── manifest.json
+└── revisions/
+    └── <revision UUID>/
+        └── candytest.sqlite3
+```
+
+Push 使用 SQLite Backup API 生成包含 WAL 已提交数据的一致快照，上传并校验 SHA-256 后最后更新 manifest。Pull 会先验证 manifest、文件大小、SHA-256、SQLite 完整性和数据库版本，再原子替换本机数据库。
+
+### 手动同步
+
+- **Push 覆盖云端**：本机完整数据库成为云端当前版本。
+- **Pull 覆盖本机**：云端完整数据库替换本机数据。
+- Pull **不会创建自动备份**。
+- 如果远端 revision 已被另一台设备更新，普通 Push 会拒绝；页面可在再次确认后强制覆盖。
+- 测试任务与同步互斥，同一时间只能执行其中一种操作。
+
+### 自动同步
+
+可分别启用：
+
+- **启动时自动 Pull**：打开服务、浏览器显示前拉取远端；失败会记录警告并继续使用本机数据。
+- **正常退出时自动 Push**：使用 `Ctrl+C` 等正常方式退出时推送；远端冲突会跳过，绝不自动强制覆盖。
+
+强制结束进程、任务管理器终止、断电或系统崩溃无法保证执行退出 Push。需要确保数据已经上传时，请使用页面上的手动 Push。
+
+首次使用建议：
+
+1. 填写 WebDAV 服务父地址、远端目录、用户名和密码；
+2. 点击“保存并测试连接”；
+3. 第一台设备手动 Push；
+4. 其他设备配置同一远端目录后手动 Pull；
+5. 确认正常后再开启自动 Pull/Push。
+
+WebDAV 服务需要支持 `PROPFIND`、`MKCOL`、`PUT`、`GET` 和 `DELETE`。单个数据库快照上限为 500 MiB。HTTP/HTTPS 都可配置，建议使用 HTTPS。
 
 ## pi / Codex CLI 前置条件
 
@@ -129,7 +187,7 @@ $env:CANDYTEST_DATA_DIR = "D:\PrivateData\CandyTest"
 python run.py
 ```
 
-其中的 `candytest.sqlite3` 保存中转站、任务和每轮结果。页面的“清空历史”只删除任务与运行记录，**不会删除中转站配置**。
+其中的 `candytest.sqlite3` 保存中转站、任务和每轮结果；`webdav.json` 保存本机 WebDAV 连接和自动同步开关。页面的“清空历史”只删除任务与运行记录，**不会删除中转站配置或 WebDAV 设置**。
 
 ## 测试语义
 
@@ -149,6 +207,10 @@ python run.py
 | 任务全部 ERROR / 401 | 核对 Base URL、Key、模型 ID 以及中转站的 Responses API 兼容性；编辑站点时若不想改 Key 请留空。 |
 | 429 或调用超时 | 降低每站轮数、切换串行、稍后重试，或检查中转站配额与限流规则。 |
 | 正确率低于 80% | 展开历史中的回答和错误详情；ERROR 不在分母中，应同时关注 ERROR 数量。 |
+| WebDAV 401/403 | 核对用户名、密码和服务端目录权限；密码留空保存表示保留旧密码。 |
+| WebDAV 404/MKCOL 失败 | `服务地址`必须是已存在的父路径；程序只自动创建最后一级远端目录。 |
+| 自动 Pull 失败 | 应用会继续使用本机数据；在页面检查远端状态并手动重试。 |
+| 自动 Push 未执行 | 远端 revision 已变化时会安全跳过；仍有测试任务时会失败并跳过。请先完成测试，再手动 Push。 |
 | 端口被占用 | 设置未被占用的 `CANDYTEST_PORT` 后重新启动。 |
 
 ## 离线测试
@@ -159,4 +221,4 @@ python run.py
 python -m unittest discover -s tests -v
 ```
 
-测试覆盖判分、pi/Codex JSONL 解析、临时配置的 Key 隔离、SQLite CRUD/历史统计、串并行调度、80% 阈值和 Flask API 校验。运行 API 测试前需按上面的安装步骤安装 Flask；若环境中尚未安装 Flask，相关测试会标记为跳过，其余离线核心测试仍可执行。
+测试覆盖判分、pi/Codex JSONL、临时配置的 Key 隔离、SQLite CRUD/完整快照恢复、串并行调度、任务中断、80% 阈值、Flask API，以及离线 mock WebDAV 的 Basic Auth、Push/Pull、冲突、损坏校验和自动生命周期；不会访问真实 WebDAV 或模型 API。

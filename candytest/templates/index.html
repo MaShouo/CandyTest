@@ -11,6 +11,26 @@
   <section class="notice"><strong>安全提示：</strong>API Key 会以<strong>本地明文</strong>保存在当前用户数据目录；服务只监听回环地址。请勿在共享帐户中保存生产密钥。</section>
   <p id="flash" class="flash" role="status"></p>
 
+  <section class="panel"><div class="section-title"><div><h2>WebDAV 完整同步</h2><p>同步整个 SQLite 数据库：中转站、API Key、Clash 设置、任务、回答和历史都会完整覆盖。</p></div><span id="webdavStatus" class="badge">未配置</span></div>
+    <form id="webdavForm" class="webdav-grid" autocomplete="off">
+      <label class="full">WebDAV 服务地址<input name="server_url" id="webdavServerUrl" type="url" maxlength="2048" required placeholder="https://cloud.example.com/dav/files/user"><small>填写远端目录的父地址；支持 Basic Auth。</small></label>
+      <label>远端目录<input name="remote_path" id="webdavRemotePath" maxlength="1000" required placeholder="CandyTest"></label>
+      <label>用户名<input name="username" id="webdavUsername" maxlength="500" required></label>
+      <label class="full">密码<input name="password" id="webdavPassword" type="password" maxlength="4096" placeholder="编辑时留空则保留已保存密码"></label>
+      <label class="check"><input name="auto_pull_start" id="webdavAutoPull" type="checkbox"> 启动时自动 Pull</label>
+      <label class="check"><input name="auto_push_exit" id="webdavAutoPush" type="checkbox"> 正常退出时自动 Push</label>
+      <div class="full actions webdav-actions">
+        <button type="submit">保存设置</button>
+        <button id="testWebdav" type="button" class="secondary">保存并测试连接</button>
+        <button id="refreshWebdav" type="button" class="secondary">检查远端状态</button>
+        <button id="pushWebdav" type="button" class="secondary">Push 覆盖云端</button>
+        <button id="pullWebdav" type="button" class="stop">Pull 覆盖本机</button>
+      </div>
+    </form>
+    <p id="webdavInfo" class="muted">尚未配置。Pull 不会自动备份；退出自动 Push 只在正常退出时执行，远端冲突时会跳过。</p>
+    <p class="warn"><strong>注意：</strong>Pull 会无备份替换本机全部 CandyTest 数据。强制 Push 会覆盖远端数据。</p>
+  </section>
+
   <section class="panel"><div class="section-title"><div><h2>Clash 网络代理</h2><p>全局应用于后续启动的 pi/Codex 测试；支持 Clash HTTP/HTTPS 代理端口。</p></div><span id="proxyStatus" class="badge">未启用</span></div>
     <form id="proxyForm" class="proxy-controls" autocomplete="off">
       <label class="check"><input name="enabled" id="proxyEnabled" type="checkbox"> 启用全局代理</label>

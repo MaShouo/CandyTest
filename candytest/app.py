@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -13,6 +14,18 @@ from . import CODEX_EFFORTS, MAX_ROUNDS, PI_EFFORTS
 from .cli import cli_availability
 from .jobs import JobManager
 from .storage import Database, default_data_dir
+from .webdav_sync import (
+    WebDAVBusyError,
+    WebDAVConfigError,
+    WebDAVConfigStore,
+    WebDAVNoRemoteDataError,
+    WebDAVNotConfiguredError,
+    WebDAVRequestError,
+    WebDAVSyncConflictError,
+    WebDAVSyncError,
+    WebDAVSyncService,
+    WebDAVValidationError,
+)
 
 
 def api_error(code: str, message: str, status: int = 400):
@@ -118,14 +131,106 @@ def configured_port() -> int:
     return port
 
 
+def _proxy_url(db: Database) -> str | None:
+    proxy = db.proxy_settings()
+    return proxy["url"] if proxy["enabled"] else None
+
+
+def _record_sync_state(app: Flask, operation: str, status: str, *, automatic: bool,
+                       result: dict[str, Any] | None = None,
+                       error: WebDAVSyncError | None = None) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "operation": operation,
+        "status": status,
+        "automatic": automatic,
+        "result": result,
+        "error": None if error is None else {"code": error.code, "message": str(error)},
+    }
+    state = app.extensions["candytest_sync_state"]
+    with state["lock"]:
+        state["last"] = item
+    return item
+
+
+def sync_runtime_state(app: Flask) -> dict[str, Any] | None:
+    state = app.extensions["candytest_sync_state"]
+    with state["lock"]:
+        last = state["last"]
+        return None if last is None else dict(last)
+
+
+def perform_startup_sync(app: Flask) -> dict[str, Any]:
+    """Best-effort startup Pull. Failure is recorded but never blocks startup."""
+    store: WebDAVConfigStore = app.extensions["candytest_webdav_store"]
+    service: WebDAVSyncService = app.extensions["candytest_webdav"]
+    db: Database = app.extensions["candytest_db"]
+    try:
+        config = store.get()
+        if not config["auto_pull_start"]:
+            return _record_sync_state(app, "pull", "disabled", automatic=True)
+        result = service.pull(proxy_url=_proxy_url(db))
+        return _record_sync_state(app, "pull", "completed", automatic=True, result=result)
+    except WebDAVSyncError as exc:
+        return _record_sync_state(app, "pull", "failed", automatic=True, error=exc)
+    except Exception:
+        exc = WebDAVSyncError("启动自动 Pull 发生本地错误，已继续使用本地数据")
+        return _record_sync_state(app, "pull", "failed", automatic=True, error=exc)
+
+
+def perform_shutdown_sync(app: Flask) -> dict[str, Any]:
+    """Best-effort normal-exit Push; a remote conflict is always skipped."""
+    store: WebDAVConfigStore = app.extensions["candytest_webdav_store"]
+    service: WebDAVSyncService = app.extensions["candytest_webdav"]
+    db: Database = app.extensions["candytest_db"]
+    try:
+        config = store.get()
+        if not config["auto_push_exit"]:
+            return _record_sync_state(app, "push", "disabled", automatic=True)
+        result = service.push(force=False, proxy_url=_proxy_url(db))
+        return _record_sync_state(app, "push", "completed", automatic=True, result=result)
+    except WebDAVSyncConflictError as exc:
+        return _record_sync_state(app, "push", "skipped", automatic=True, error=exc)
+    except WebDAVSyncError as exc:
+        return _record_sync_state(app, "push", "failed", automatic=True, error=exc)
+    except Exception:
+        exc = WebDAVSyncError("退出自动 Push 发生本地错误，已跳过")
+        return _record_sync_state(app, "push", "failed", automatic=True, error=exc)
+
+
 def create_app(data_dir: Path | None = None) -> Flask:
     app = Flask(__name__)
     app.config.update(JSON_AS_ASCII=False, MAX_CONTENT_LENGTH=32 * 1024)
     app.json.ensure_ascii = False
     db = Database(data_dir)
     manager = JobManager(db)
+    webdav_store = WebDAVConfigStore(db.data_dir)
+    webdav = WebDAVSyncService(
+        db, webdav_store, manager.reserve_sync, manager.release_sync,
+    )
     app.extensions["candytest_db"] = db
     app.extensions["candytest_jobs"] = manager
+    app.extensions["candytest_webdav_store"] = webdav_store
+    app.extensions["candytest_webdav"] = webdav
+    app.extensions["candytest_sync_state"] = {"lock": threading.Lock(), "last": None}
+
+    def sync_mutation_error():
+        if manager.sync_reserved():
+            return api_error("SYNC_BUSY", "WebDAV 同步进行中，请稍后再修改数据", 409)
+        return None
+
+    def webdav_error(exc: WebDAVSyncError):
+        if isinstance(exc, WebDAVConfigError):
+            status = 400
+        elif isinstance(exc, (WebDAVBusyError, WebDAVNotConfiguredError,
+                              WebDAVNoRemoteDataError, WebDAVSyncConflictError)):
+            status = 409
+        elif isinstance(exc, WebDAVValidationError):
+            status = 422
+        elif isinstance(exc, WebDAVRequestError):
+            status = 502
+        else:
+            status = 500
+        return api_error(exc.code, str(exc), status)
 
     @app.get("/")
     def index():
@@ -142,6 +247,9 @@ def create_app(data_dir: Path | None = None) -> Flask:
 
     @app.put("/api/settings/proxy")
     def update_proxy_settings():
+        conflict = sync_mutation_error()
+        if conflict:
+            return conflict
         data, error = json_body()
         if error:
             return error
@@ -151,12 +259,86 @@ def create_app(data_dir: Path | None = None) -> Flask:
             return api_error("INVALID_PROXY", str(exc))
         return jsonify({"proxy": db.save_proxy_settings(item["enabled"], item["url"])})
 
+    @app.get("/api/settings/webdav")
+    def get_webdav_settings():
+        try:
+            settings = webdav_store.public()
+        except WebDAVSyncError as exc:
+            return webdav_error(exc)
+        return jsonify({"webdav": settings, "last_operation": sync_runtime_state(app)})
+
+    @app.put("/api/settings/webdav")
+    def update_webdav_settings():
+        data, error = json_body()
+        if error:
+            return error
+        try:
+            settings = webdav.save_config(data)
+        except WebDAVSyncError as exc:
+            return webdav_error(exc)
+        return jsonify({"webdav": settings})
+
+    @app.post("/api/webdav/test")
+    def test_webdav_connection():
+        try:
+            result = webdav.test_connection(proxy_url=_proxy_url(db))
+            _record_sync_state(app, "test", "completed", automatic=False, result=result)
+            return jsonify({"status": result})
+        except WebDAVSyncError as exc:
+            _record_sync_state(app, "test", "failed", automatic=False, error=exc)
+            return webdav_error(exc)
+
+    @app.get("/api/webdav/status")
+    def webdav_status():
+        try:
+            status = webdav.connection_status(proxy_url=_proxy_url(db))
+        except WebDAVSyncError as exc:
+            return webdav_error(exc)
+        return jsonify({
+            "status": status,
+            "last_operation": sync_runtime_state(app),
+        })
+
+    @app.post("/api/webdav/push")
+    def push_webdav():
+        data, error = json_body()
+        if error:
+            return error
+        force = data.get("force", False)
+        if not isinstance(force, bool):
+            return api_error("INVALID_FORCE", "force 必须为布尔值")
+        try:
+            result = webdav.push(force=force, proxy_url=_proxy_url(db))
+            _record_sync_state(app, "push", "completed", automatic=False, result=result)
+            return jsonify({"result": result})
+        except WebDAVSyncError as exc:
+            _record_sync_state(app, "push", "failed", automatic=False, error=exc)
+            return webdav_error(exc)
+
+    @app.post("/api/webdav/pull")
+    def pull_webdav():
+        data, error = json_body()
+        if error:
+            return error
+        if data.get("confirm") is not True:
+            return api_error("CONFIRM_REQUIRED", "Pull 会无备份覆盖本地全部数据，请明确确认")
+        try:
+            result = webdav.pull(proxy_url=_proxy_url(db))
+            _record_sync_state(app, "pull", "completed", automatic=False, result=result)
+            return jsonify({"result": result})
+        except WebDAVSyncError as exc:
+            _record_sync_state(app, "pull", "failed", automatic=False, error=exc)
+            return webdav_error(exc)
+
     @app.get("/api/gateways")
     def get_gateways():
         return jsonify({"gateways": db.gateways()})
 
     @app.post("/api/gateways")
     def create_gateway():
+        conflict = sync_mutation_error()
+        if conflict:
+            return conflict
         data, error = json_body()
         if error: return error
         try:
@@ -167,6 +349,9 @@ def create_app(data_dir: Path | None = None) -> Flask:
 
     @app.put("/api/gateways/<int:gateway_id>")
     def update_gateway(gateway_id: int):
+        conflict = sync_mutation_error()
+        if conflict:
+            return conflict
         data, error = json_body()
         if error: return error
         try:
@@ -179,6 +364,9 @@ def create_app(data_dir: Path | None = None) -> Flask:
 
     @app.delete("/api/gateways/<int:gateway_id>")
     def delete_gateway(gateway_id: int):
+        conflict = sync_mutation_error()
+        if conflict:
+            return conflict
         if not db.delete_gateway(gateway_id):
             return api_error("GATEWAY_NOT_FOUND", "中转站不存在或已删除", 404)
         return jsonify({"ok": True})
@@ -250,6 +438,9 @@ def create_app(data_dir: Path | None = None) -> Flask:
 
     @app.delete("/api/history")
     def clear_history():
+        conflict = sync_mutation_error()
+        if conflict:
+            return conflict
         data, error = json_body()
         if error: return error
         if data.get("confirm") is not True:
@@ -270,7 +461,12 @@ def main() -> None:
     from waitress import serve
 
     host, port = configured_host(), configured_port()
-    serve(create_app(), host=host, port=port, threads=8)
+    app = create_app()
+    perform_startup_sync(app)
+    try:
+        serve(app, host=host, port=port, threads=8)
+    finally:
+        perform_shutdown_sync(app)
 
 
 if __name__ == "__main__":

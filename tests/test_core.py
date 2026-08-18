@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -213,6 +214,12 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn('input[type=checkbox]:checked', source)
         self.assertIn("checkbox.checked = gateway.enabled && selected.has(gateway.id)", source)
         self.assertIn('previous = select.value || "low"', source)
+        self.assertIn('e.code !== "WEBDAV_CONFLICT"', source)
+        self.assertIn("Pull 不会备份", source)
+        template = (Path(__file__).parents[1] / "candytest/templates/index.html").read_text(encoding="utf-8")
+        self.assertIn('id="webdavForm"', template)
+        self.assertIn('id="webdavAutoPull"', template)
+        self.assertIn('id="webdavAutoPush"', template)
 
 
 class StorageTests(unittest.TestCase):
@@ -278,6 +285,104 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(self.db.history()["gateways"][0]["accuracy"], 75.0)
         self.db.add_run(run_payload(job_id, correct=1))
         self.assertEqual(self.db.history()["gateways"][0]["accuracy"], 80.0)
+
+    def test_snapshot_is_independent_and_contains_committed_wal_data(self):
+        site = self.create_site()
+        snapshot = Path(self.temp.name) / "exports" / "candytest.sqlite3"
+        # Keep a writer connection open so this committed proxy update is in
+        # the source WAL when sqlite3.backup creates the single-file snapshot.
+        with self.db.connect() as conn:
+            now = utcnow()
+            conn.executemany(
+                """INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at""",
+                (("proxy_enabled", "1", now), ("proxy_url", PROXY, now)),
+            )
+            self.assertTrue(Path(f"{self.db.path}-wal").is_file())
+            self.assertEqual(self.db.create_snapshot(snapshot), snapshot)
+        self.assertTrue(snapshot.is_file())
+        if os.name != "nt":
+            self.assertEqual(snapshot.stat().st_mode & 0o777, 0o600)
+
+        # Mutations after backup cannot change the single-file snapshot.
+        self.db.update_gateway(site["id"], {
+            "name": "已修改", "base_url": "https://changed.example/v1", "api_key": "other-key",
+            "model": "other-model", "enabled": 1,
+        })
+        self.db.save_proxy_settings(False, "")
+        conn = sqlite3.connect(snapshot)
+        try:
+            stored = conn.execute("SELECT name, api_key FROM gateways WHERE id = ?", (site["id"],)).fetchone()
+            settings = dict(conn.execute("SELECT key, value FROM app_settings").fetchall())
+        finally:
+            conn.close()
+        self.assertEqual(stored, ("站点 A", SECRET))
+        self.assertEqual(settings, {"proxy_enabled": "1", "proxy_url": PROXY})
+
+    def test_restore_snapshot_recovers_all_persisted_data_without_backup(self):
+        site = self.create_site()
+        self.db.save_proxy_settings(True, PROXY)
+        job_id = self.db.create_job(job_payload())
+        self.db.add_run(run_payload(job_id, correct=1))
+        self.db.set_job_status(job_id, "completed")
+        snapshot = Path(self.temp.name) / "full-mirror.sqlite3"
+        self.db.create_snapshot(snapshot)
+
+        self.db.update_gateway(site["id"], {
+            "name": "本地更改", "base_url": "https://changed.example/v1", "api_key": "different-key",
+            "model": "different-model", "enabled": 0,
+        })
+        self.db.save_proxy_settings(False, "")
+        self.db.clear_history()
+        self.create_site("仅本地")
+
+        self.db.restore_snapshot(snapshot)
+        with self.db.connect() as conn:
+            gateways = conn.execute("SELECT name, api_key FROM gateways ORDER BY id").fetchall()
+            settings = dict(conn.execute("SELECT key, value FROM app_settings").fetchall())
+            jobs = conn.execute("SELECT id, status FROM test_jobs").fetchall()
+            runs = conn.execute("SELECT job_id, answer, is_correct FROM test_runs").fetchall()
+        self.assertEqual([tuple(row) for row in gateways], [("站点 A", SECRET)])
+        self.assertEqual(settings, {"proxy_enabled": "1", "proxy_url": PROXY})
+        self.assertEqual([tuple(row) for row in jobs], [(job_id, "completed")])
+        self.assertEqual([tuple(row) for row in runs], [(job_id, "答案是 21", 1)])
+        self.assertFalse(list(Path(self.temp.name).glob(".candytest-restore-*.sqlite3")))
+
+    def test_snapshot_validation_rejects_bad_schema_versions_and_restore_keeps_database(self):
+        site = self.create_site()
+        invalid = Path(self.temp.name) / "not-a-snapshot.sqlite3"
+        invalid.write_bytes(b"not a database")
+        with self.assertRaises(ValueError):
+            self.db.restore_snapshot(invalid)
+        self.assertEqual(self.db.gateway_records([site["id"]])[0]["api_key"], SECRET)
+
+        for version in (1, 3):
+            snapshot = Path(self.temp.name) / f"version-{version}.sqlite3"
+            self.db.create_snapshot(snapshot)
+            conn = sqlite3.connect(snapshot)
+            try:
+                conn.execute("PRAGMA journal_mode = DELETE")
+                conn.execute(f"PRAGMA user_version = {version}")
+                conn.commit()
+            finally:
+                conn.close()
+            with self.assertRaisesRegex(ValueError, "版本不兼容"):
+                self.db.validate_snapshot(snapshot)
+
+    def test_connect_lock_covers_the_connection_lifetime(self):
+        acquired = threading.Event()
+
+        def open_connection() -> None:
+            with self.db.connect():
+                acquired.set()
+
+        with self.db.connect():
+            worker = threading.Thread(target=open_connection)
+            worker.start()
+            self.assertFalse(acquired.wait(0.15))
+        self.assertTrue(acquired.wait(2))
+        worker.join(2)
+        self.assertFalse(worker.is_alive())
 
 
 class SchedulingTests(unittest.TestCase):

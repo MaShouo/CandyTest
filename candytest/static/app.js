@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   const $ = (s) => document.querySelector(s);
-  const state = { gateways: [], history: new Map(), runtime: null, proxy: { enabled: false, url: "" }, editing: null, currentId: null };
+  const state = { gateways: [], history: new Map(), runtime: null, proxy: { enabled: false, url: "" }, webdav: null, syncBusy: false, editing: null, currentId: null };
   const efforts = { pi: ["off", "minimal", "low", "medium", "high", "xhigh", "max"], codex: ["low", "medium", "high", "xhigh", "max", "ultra"] };
 
   function node(tag, text, className) { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (className) el.className = className; return el; }
@@ -12,7 +12,7 @@
   async function api(url, options = {}) {
     const opts = { ...options, headers: { ...(options.body ? { "Content-Type": "application/json" } : {}), ...(options.headers || {}) } };
     const response = await fetch(url, opts); const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error?.message || `请求失败 (${response.status})`);
+    if (!response.ok) { const error = new Error(data.error?.message || `请求失败 (${response.status})`); error.code = data.error?.code || "HTTP_ERROR"; error.status = response.status; throw error; }
     return data;
   }
   function accuracyBadge(value) { const low = value != null && value < 80; return node("span", pct(value), `badge ${low ? "error" : "ok"}`); }
@@ -45,6 +45,37 @@
     status.className = `badge ${proxy.enabled ? "ok" : ""}`;
   }
   async function loadProxy() { const data = await api("/api/settings/proxy"); renderProxy(data.proxy); }
+  function shortRevision(value) { return value ? `${value.slice(0, 8)}…` : "无"; }
+  function webdavLastText(last) {
+    if (!last) return "尚未执行同步。";
+    const names = { pull: "Pull", push: "Push", test: "连接测试" };
+    const statuses = { completed: "完成", failed: "失败", skipped: "因冲突跳过", disabled: "未启用" };
+    const suffix = last.result?.revision ? ` · revision ${shortRevision(last.result.revision)}` : last.error?.message ? ` · ${last.error.message}` : "";
+    return `${last.automatic ? "自动" : "手动"}${names[last.operation] || last.operation}：${statuses[last.status] || last.status}${suffix}`;
+  }
+  function renderWebdav(settings, last = null) {
+    state.webdav = settings;
+    $("#webdavServerUrl").value = settings.server_url || "";
+    $("#webdavRemotePath").value = settings.remote_path || "";
+    $("#webdavUsername").value = settings.username || "";
+    $("#webdavPassword").value = "";
+    $("#webdavPassword").placeholder = settings.password_saved ? "已保存；留空则保留" : "请输入 WebDAV 密码";
+    $("#webdavAutoPull").checked = Boolean(settings.auto_pull_start);
+    $("#webdavAutoPush").checked = Boolean(settings.auto_push_exit);
+    const badge = $("#webdavStatus"); badge.textContent = settings.configured ? "已配置" : "未配置"; badge.className = `badge ${settings.configured ? "ok" : ""}`;
+    $("#webdavInfo").textContent = `${webdavLastText(last)} · 本机已见 revision：${shortRevision(settings.last_seen_revision)}`;
+  }
+  function webdavBody() { const f = $("#webdavForm"); return { server_url: f.server_url.value, remote_path: f.remote_path.value, username: f.username.value, password: f.password.value, auto_pull_start: f.auto_pull_start.checked, auto_push_exit: f.auto_push_exit.checked }; }
+  async function saveWebdav(showMessage = true) { const data = await api("/api/settings/webdav", { method: "PUT", body: JSON.stringify(webdavBody()) }); renderWebdav(data.webdav); if (showMessage) flash("WebDAV 设置已保存。"); return data.webdav; }
+  async function loadWebdav() { const data = await api("/api/settings/webdav"); renderWebdav(data.webdav, data.last_operation); }
+  function setSyncBusy(busy) { state.syncBusy = busy; for (const element of $("#webdavForm").elements) element.disabled = busy; }
+  function renderWebdavRemote(status, last = null) {
+    const badge = $("#webdavStatus");
+    badge.textContent = !status.configured ? "未配置" : status.reachable ? status.conflict ? "有冲突" : "远端可用" : "连接失败";
+    badge.className = `badge ${status.reachable && !status.conflict ? "ok" : status.configured ? "error" : ""}`;
+    const remote = `远端 revision：${shortRevision(status.remote_revision)} · 本机已见：${shortRevision(status.last_seen_revision)}`;
+    $("#webdavInfo").textContent = `${remote}${status.error ? ` · ${status.error.message}` : ""}${last ? ` · ${webdavLastText(last)}` : ""}`;
+  }
   function renderGateways() {
     const tbody = $("#gatewayRows");
     const selected = new Set([...tbody.querySelectorAll("input[type=checkbox]:checked")].map(item => Number(item.value)));
@@ -94,6 +125,11 @@
   async function loadHistory() { renderHistory(await api("/api/history")); }
   async function refreshCurrent() { const data = await api("/api/jobs/current"); renderJob(data.job); state.currentId = data.job?.id || null; if (["completed", "failed", "cancelled"].includes(data.job?.status)) await loadHistory(); }
   $("#newGateway").onclick = () => showGateway(); $("#cancelGateway").onclick = () => { $("#gatewayPanel").hidden = true; };
+  $("#webdavForm").onsubmit = async (event) => { event.preventDefault(); try { await saveWebdav(); } catch (e) { flash(e.message, true); } };
+  $("#testWebdav").onclick = async () => { setSyncBusy(true); try { await saveWebdav(false); const data = await api("/api/webdav/test", { method: "POST", body: "{}" }); renderWebdavRemote(data.status); flash("WebDAV 读写测试通过。"); } catch (e) { flash(e.message, true); } finally { setSyncBusy(false); } };
+  $("#refreshWebdav").onclick = async () => { setSyncBusy(true); try { const data = await api("/api/webdav/status"); renderWebdavRemote(data.status, data.last_operation); flash(data.status.reachable ? "已刷新 WebDAV 状态。" : data.status.error?.message || "远端尚无同步数据。"); } catch (e) { flash(e.message, true); } finally { setSyncBusy(false); } };
+  $("#pushWebdav").onclick = async () => { if (!confirm("Push 会用本机全部数据覆盖云端。继续吗？")) return; setSyncBusy(true); try { let data; try { data = await api("/api/webdav/push", { method: "POST", body: JSON.stringify({ force: false }) }); } catch (e) { if (e.code !== "WEBDAV_CONFLICT" || !confirm("远端已被其他设备更新。确定强制用本机数据覆盖云端吗？")) throw e; data = await api("/api/webdav/push", { method: "POST", body: JSON.stringify({ force: true }) }); } await loadWebdav(); flash(`Push 完成：revision ${shortRevision(data.result.revision)}${data.result.warnings?.length ? `；${data.result.warnings.join("；")}` : ""}`); } catch (e) { flash(e.message, true); } finally { setSyncBusy(false); } };
+  $("#pullWebdav").onclick = async () => { if (!confirm("危险：Pull 不会备份，会用云端快照替换本机全部中转站、API Key、代理设置和历史。确定继续吗？")) return; setSyncBusy(true); try { const data = await api("/api/webdav/pull", { method: "POST", body: JSON.stringify({ confirm: true }) }); flash(`Pull 完成：revision ${shortRevision(data.result.revision)}，正在刷新页面…`); setTimeout(() => location.reload(), 300); } catch (e) { flash(e.message, true); setSyncBusy(false); } };
   $("#proxyEnabled").onchange = (event) => { $("#proxyUrl").required = event.currentTarget.checked; };
   $("#proxyForm").onsubmit = async (event) => { event.preventDefault(); const f = event.currentTarget; const body = { enabled: f.enabled.checked, url: f.url.value }; try { const data = await api("/api/settings/proxy", { method: "PUT", body: JSON.stringify(body) }); renderProxy(data.proxy); flash(data.proxy.enabled ? "Clash 代理已启用，将应用于之后启动的测试。" : "代理已关闭，之后启动的测试将直接连接。"); } catch (e) { flash(e.message, true); } };
   $("#gatewayForm").onsubmit = async (event) => { event.preventDefault(); const f = event.currentTarget; const body = { name: f.name.value, base_url: f.base_url.value, model: f.model.value, api_key: f.api_key.value, enabled: f.enabled.checked }; try { await api(state.editing ? `/api/gateways/${state.editing.id}` : "/api/gateways", { method: state.editing ? "PUT" : "POST", body: JSON.stringify(body) }); $("#gatewayPanel").hidden = true; flash("中转站已保存。"); await loadGateways(); } catch (e) { flash(e.message, true); } };
@@ -101,6 +137,6 @@
   $("#jobForm").onsubmit = async (event) => { event.preventDefault(); const f = event.currentTarget, gateway_ids = [...document.querySelectorAll("#gatewayRows input[type=checkbox]:checked")].map(x => Number(x.value)); const body = { engine: f.engine.value, rounds: Number(f.rounds.value), reasoning_effort: f.reasoning_effort.value, model_override: f.model_override.value, mode: f.mode.value, gateway_ids }; try { const result = await api("/api/jobs", { method: "POST", body: JSON.stringify(body) }); flash(`任务 #${result.job_id} 已启动。`); await refreshCurrent(); } catch (e) { flash(e.message, true); } };
   $("#stopJob").onclick = async () => { if (!state.currentId || !confirm("确定中断当前测试？已完成的轮次会保留，正在调用的 CLI 进程将被终止。")) return; const button = $("#stopJob"); button.disabled = true; button.textContent = "正在中断…"; try { await api(`/api/jobs/${state.currentId}/cancel`, { method: "POST" }); flash("已发送中断请求，正在终止 CLI 调用…"); await refreshCurrent(); } catch (e) { flash(e.message, true); button.disabled = false; button.textContent = "中断测试"; } };
   $("#clearHistory").onclick = async () => { if (!confirm("确认清空所有测试任务和运行历史？中转站配置不会删除。")) return; try { await api("/api/history", { method: "DELETE", body: JSON.stringify({ confirm: true }) }); flash("历史已清空。"); await loadHistory(); renderJob(null); } catch (e) { flash(e.message, true); } };
-  async function init() { try { state.runtime = await api("/api/runtime"); renderEngines(); await Promise.all([loadProxy(), loadHistory(), loadGateways(), refreshCurrent()]); setInterval(() => refreshCurrent().catch(e => flash(e.message, true)), 2000); } catch (e) { flash(e.message, true); } }
+  async function init() { try { state.runtime = await api("/api/runtime"); renderEngines(); await Promise.all([loadWebdav(), loadProxy(), loadHistory(), loadGateways(), refreshCurrent()]); setInterval(() => refreshCurrent().catch(e => flash(e.message, true)), 2000); } catch (e) { flash(e.message, true); } }
   init();
 })();
