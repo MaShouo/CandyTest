@@ -1,0 +1,11 @@
+services:
+  candytest:
+    networks:
+      npm:
+        aliases:
+          - candytest
+
+networks:
+  npm:
+    name: "${NPM_NETWORK:?Set NPM_NETWORK to the existing Nginx Proxy Manager network}"
+    external: true

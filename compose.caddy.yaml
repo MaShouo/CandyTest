@@ -1,0 +1,33 @@
+services:
+  candytest:
+    networks:
+      default: {}
+      caddy: {}
+
+  caddy:
+    image: caddy:2.8.4-alpine
+    depends_on:
+      candytest:
+        condition: service_healthy
+    environment:
+      CANDYTEST_DOMAIN: "${CANDYTEST_DOMAIN:?Set CANDYTEST_DOMAIN for Caddy HTTPS}"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - caddy
+      - caddy-egress
+    restart: unless-stopped
+
+networks:
+  caddy:
+    internal: true
+  caddy-egress:
+
+volumes:
+  caddy-data:
+  caddy-config:

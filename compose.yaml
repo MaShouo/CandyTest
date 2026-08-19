@@ -1,13 +1,6 @@
 services:
   candytest:
-    image: candytest:local
-    build:
-      context: .
-      args:
-        PI_VERSION: "${PI_VERSION:-0.84.2}"
-        CODEX_VERSION: "${CODEX_VERSION:-0.147.0}"
-    ports:
-      - "127.0.0.1:${CANDYTEST_PORT:-8765}:8765"
+    image: "${CANDYTEST_IMAGE:-ghcr.io/mashouo/candytest:latest}"
     environment:
       CANDYTEST_DEPLOYMENT: server
       CANDYTEST_HOST: 0.0.0.0

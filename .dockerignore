@@ -28,6 +28,11 @@ auth.json.tmp-*
 .env
 .env.*
 !.env.example
+.deploy
+.deploy/**
+deploy
+compose*.yaml
+deploy.sh
 *.pem
 *.key
 *.crt
@@ -36,4 +41,3 @@ auth.json.tmp-*
 .gitignore
 README*
 Dockerfile
-compose.yaml

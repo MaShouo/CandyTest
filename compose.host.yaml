@@ -1,0 +1,4 @@
+services:
+  candytest:
+    ports:
+      - "${CANDYTEST_BIND_ADDRESS:-127.0.0.1}:${CANDYTEST_PORT:-8765}:8765"

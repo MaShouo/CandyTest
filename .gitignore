@@ -35,7 +35,8 @@ auth.json.tmp-*
 *.p12
 *.pfx
 
-# Logs, temporary files and editor/OS metadata
+# Logs, deployment state, temporary files and editor/OS metadata
+.deploy/
 *.log
 *.tmp
 *.temp

@@ -1,0 +1,4 @@
+{$CANDYTEST_DOMAIN} {
+    encode zstd gzip
+    reverse_proxy candytest:8765
+}
