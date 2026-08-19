@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+from datetime import datetime, timedelta, timezone
 import sqlite3
 import subprocess
 import sys
@@ -283,6 +284,11 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn("/api/history/gateways/", source)
         self.assertIn("中转站配置不会删除", source)
         self.assertIn("所选中转站暂无测试记录", source)
+        self.assertIn("today_accuracy", source)
+        self.assertIn("今日正确率", source)
+        self.assertIn("今日：正确", source)
+        self.assertIn("历史：正确", source)
+        self.assertIn("stat-details-stacked", source)
         self.assertNotIn("不计正确率", source)
         self.assertIn('details[open][data-detail-key]', source)
         self.assertIn("d.open = opened.has(key)", source)
@@ -293,6 +299,8 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn("Pull 不会备份", source)
         template = (Path(__file__).parents[1] / "candytest/templates/index.html").read_text(encoding="utf-8")
         self.assertIn('id="selectAllGateways"', template)
+        self.assertIn("正确/总次数", template)
+        self.assertIn("历史正确率</th><th>今日正确率", template)
         self.assertIn('href="{{ url_for(\'settings\') }}"', template)
         self.assertIn('id="pushWebdav"', template)
         self.assertIn('id="pullWebdav"', template)
@@ -306,6 +314,7 @@ class FrontendSafetyTests(unittest.TestCase):
         style = (Path(__file__).parents[1] / "candytest/static/style.css").read_text(encoding="utf-8")
         self.assertIn(".stat-grid{display:grid;grid-template-columns:1fr", style)
         self.assertIn(".stat-details", style)
+        self.assertIn(".stat-details-stacked", style)
         self.assertIn(".stat-alerts", style)
         self.assertIn(".stat-selectable", style)
         self.assertIn(".stat-selectable.selected", style)
@@ -385,6 +394,49 @@ class StorageTests(unittest.TestCase):
         )
         self.assertEqual(aggregate["accuracy"], 50.0)
         self.assertEqual(len(history["runs"]), 4)
+
+    def test_history_includes_today_accuracy_using_utc_calendar_day(self):
+        self.create_site()
+        job_id = self.db.create_job(job_payload())
+        now = datetime.now(timezone.utc)
+        today = now.replace(hour=12, minute=0, second=0, microsecond=0).isoformat()
+        yesterday = (now - timedelta(days=1)).replace(
+            hour=12, minute=0, second=0, microsecond=0
+        ).isoformat()
+
+        for status, correct, created_at in (
+            ("graded", 1, today),
+            ("graded", 0, today),
+            ("error", None, today),
+            ("cancelled", None, today),
+            ("graded", 1, yesterday),
+        ):
+            run = run_payload(job_id, status=status, correct=correct)
+            run["created_at"] = created_at
+            self.db.add_run(run)
+
+        aggregate = self.db.history()["gateways"][0]
+        self.assertEqual(
+            (aggregate["graded"], aggregate["correct"], aggregate["accuracy"]),
+            (3, 2, 66.7),
+        )
+        self.assertEqual(
+            (aggregate["today_graded"], aggregate["today_correct"], aggregate["today_accuracy"]),
+            (2, 1, 50.0),
+        )
+        self.assertEqual((aggregate["errors"], aggregate["cancelled"]), (1, 1))
+        self.assertEqual((aggregate["today_errors"], aggregate["today_cancelled"]), (1, 1))
+
+        current = self.db.job(job_id)["gateways"][0]
+        self.assertEqual(
+            (current["historical_today_graded"], current["historical_today_correct"],
+             current["historical_today_accuracy"]),
+            (2, 1, 50.0),
+        )
+        self.assertEqual(
+            (current["historical_today_errors"], current["historical_today_cancelled"]),
+            (1, 1),
+        )
 
     def test_error_classifier_identifies_gateway_outages_but_not_auth_or_rate_limits(self):
         self.assertEqual(classify_error("HTTP 503 Service Unavailable"), "gateway_unavailable")

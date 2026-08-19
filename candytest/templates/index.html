@@ -14,7 +14,7 @@
   <p id="flash" class="flash" role="status"></p>
 
   <section class="panel"><div class="section-title"><div><h2>中转站</h2><p>选择一个或多个启用站点；URL 应为 OpenAI 兼容 Responses API 地址。</p></div><button id="newGateway" class="secondary">添加中转站</button></div>
-    <div class="table-wrap"><table><thead><tr><th><label class="check select-all"><input id="selectAllGateways" type="checkbox" disabled> 全选</label></th><th>中转站名称</th><th>Responses API URL</th><th>默认模型</th><th>API Key</th><th>历史正确率</th><th>操作</th></tr></thead><tbody id="gatewayRows"></tbody></table></div>
+    <div class="table-wrap"><table><thead><tr><th><label class="check select-all"><input id="selectAllGateways" type="checkbox" disabled> 全选</label></th><th>中转站名称</th><th>Responses API URL</th><th>默认模型</th><th>API Key</th><th>正确/总次数</th><th>历史正确率</th><th>今日正确率</th><th>操作</th></tr></thead><tbody id="gatewayRows"></tbody></table></div>
   </section>
 
   <section class="panel" id="gatewayPanel" hidden><div class="section-title"><h2 id="gatewayTitle">添加中转站</h2><button id="cancelGateway" class="link">取消</button></div>

@@ -52,10 +52,10 @@
     for (const gateway of state.gateways) {
       const tr = document.createElement("tr"); const checkbox = document.createElement("input"); checkbox.type = "checkbox"; checkbox.value = gateway.id; checkbox.disabled = !gateway.enabled; checkbox.checked = gateway.enabled && selected.has(gateway.id); tr.append(node("td")); tr.firstChild.append(checkbox);
       tr.append(node("td", gateway.name + (gateway.enabled ? "" : "（已停用）")), node("td", gateway.base_url + (gateway.base_url.startsWith("http://") ? " ⚠ 不安全 HTTP" : "")), node("td", gateway.model), node("td", gateway.api_key_saved ? `已保存 ${gateway.api_key_masked || "••••••••"}` : "未保存"));
-      const h = state.history.get(gateway.id); const stat = node("td"); stat.append(accuracyBadge(h?.accuracy ?? null)); tr.append(stat);
+      const h = state.history.get(gateway.id); tr.append(node("td", `${h?.correct || 0} / ${h?.graded || 0}`)); const historyStat = node("td"); historyStat.append(accuracyBadge(h?.accuracy ?? null)); tr.append(historyStat); const todayStat = node("td"); todayStat.append(accuracyBadge(h?.today_accuracy ?? null)); tr.append(todayStat);
       const actions = node("td"), group = node("div", undefined, "row-actions"); const edit = node("button", "编辑", "secondary"); edit.type = "button"; edit.onclick = () => showGateway(gateway); const remove = node("button", "删除", "secondary danger"); remove.type = "button"; remove.onclick = () => removeGateway(gateway); group.append(edit, remove); actions.append(group); tr.append(actions); rows.push(tr);
     }
-    if (!state.gateways.length) { const tr = document.createElement("tr"), td = node("td", "尚未添加中转站", "empty"); td.colSpan = 7; tr.append(td); rows.length = 0; rows.push(tr); }
+    if (!state.gateways.length) { const tr = document.createElement("tr"), td = node("td", "尚未添加中转站", "empty"); td.colSpan = 9; tr.append(td); rows.length = 0; rows.push(tr); }
     clear(tbody, rows);
     syncGatewaySelectAll();
   }
@@ -88,8 +88,9 @@
   }
   function statCard(site, historical = false, rounds = null, selectable = false) {
     const currentLow = site.accuracy != null && site.accuracy < 80;
+    const todayLow = historical && site.today_accuracy != null && site.today_accuracy < 80;
     const historyLow = !historical && site.historical_accuracy != null && site.historical_accuracy < 80;
-    const low = currentLow || historyLow;
+    const low = currentLow || todayLow || historyLow;
     const selected = selectable && state.selectedGatewayIds.has(Number(site.gateway_id));
     const classes = ["stat"];
     if (low) classes.push("low");
@@ -105,11 +106,22 @@
       div.setAttribute("aria-label", `${site.gateway_name || site.name}筛选${selected ? "已选中" : "未选中"}`);
     }
     div.append(node("h3", site.gateway_name || site.name));
-    div.append(node("strong", pct(site.accuracy)));
-    const statDetails = node("div", undefined, "stat-details");
+    const rates = node("div", undefined, "stat-rates");
+    if (historical) {
+      const today = node("p");
+      today.append(node("span", "今日正确率："), node("strong", pct(site.today_accuracy)));
+      const allTime = node("p");
+      allTime.append(node("span", "历史正确率："), node("strong", pct(site.accuracy)));
+      rates.append(today, allTime);
+    } else {
+      rates.append(node("strong", pct(site.accuracy)));
+    }
+    div.append(rates);
+    const statDetails = node("div", undefined, `stat-details${historical ? " stat-details-stacked" : ""}`);
     if (!historical) statDetails.append(node("p", `进度 ${site.completed || 0} / ${rounds ?? "—"}`));
     if (historical) {
-      statDetails.append(node("p", `正确 ${site.correct || 0} / 已判分 ${site.graded || 0} · API 错误 ${site.errors || 0} · 中断 ${site.cancelled || 0}`));
+      statDetails.append(node("p", `今日：正确 ${site.today_correct || 0} / 已判分 ${site.today_graded || 0} · API 错误 ${site.today_errors || 0} · 中断 ${site.today_cancelled || 0}`));
+      statDetails.append(node("p", `历史：正确 ${site.correct || 0} / 已判分 ${site.graded || 0} · API 错误 ${site.errors || 0} · 中断 ${site.cancelled || 0}`));
     } else {
       statDetails.append(node("p", `本任务：正确 ${site.correct || 0} / 已判分 ${site.graded || 0} · API 错误 ${site.errors || 0} · 中断 ${site.cancelled || 0}`));
       statDetails.append(node("p", `历史：${pct(site.historical_accuracy)}（${site.historical_correct || 0} / ${site.historical_graded || 0} · API 错误 ${site.historical_errors || 0} · 中断 ${site.historical_cancelled || 0}）`));
@@ -117,6 +129,7 @@
     div.append(statDetails);
     const alerts = node("div", undefined, "stat-alerts");
     if (currentLow) alerts.append(node("p", historical ? "历史正确率低于 80%，请重点复核。" : "当前正确率低于 80%，请重点复核。", "warn"));
+    if (todayLow) alerts.append(node("p", "今日正确率低于 80%，请重点复核。", "warn"));
     if (historyLow) alerts.append(node("p", "历史正确率低于 80%，请重点复核。", "warn"));
     div.append(alerts);
     if (historical) {

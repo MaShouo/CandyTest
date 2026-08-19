@@ -8,7 +8,7 @@ import stat
 import tempfile
 import threading
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +48,12 @@ def classify_error(error: str | None) -> str:
 
 def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def utc_day_bounds() -> tuple[str, str]:
+    """Return the current UTC calendar day as ISO-8601 bounds."""
+    start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    return start.isoformat(timespec="seconds"), (start + timedelta(days=1)).isoformat(timespec="seconds")
 
 
 def default_data_dir() -> Path:
@@ -412,19 +418,30 @@ class Database:
             if not job:
                 return None
             runs = conn.execute("SELECT * FROM test_runs WHERE job_id=? ORDER BY id", (job_id,)).fetchall()
+            today_start, tomorrow_start = utc_day_bounds()
             history_rows = conn.execute("""SELECT gateway_id,
                 SUM(CASE WHEN status = 'graded' THEN 1 ELSE 0 END) graded,
                 SUM(CASE WHEN status = 'graded' AND is_correct = 1 THEN 1 ELSE 0 END) correct,
                 SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) errors,
-                SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) cancelled
-                FROM test_runs GROUP BY gateway_id""").fetchall()
+                SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) cancelled,
+                SUM(CASE WHEN status = 'graded' AND created_at >= ? AND created_at < ? THEN 1 ELSE 0 END) today_graded,
+                SUM(CASE WHEN status = 'graded' AND is_correct = 1 AND created_at >= ? AND created_at < ? THEN 1 ELSE 0 END) today_correct,
+                SUM(CASE WHEN status = 'error' AND created_at >= ? AND created_at < ? THEN 1 ELSE 0 END) today_errors,
+                SUM(CASE WHEN status = 'cancelled' AND created_at >= ? AND created_at < ? THEN 1 ELSE 0 END) today_cancelled
+                FROM test_runs GROUP BY gateway_id""", (
+                    today_start, tomorrow_start, today_start, tomorrow_start,
+                    today_start, tomorrow_start, today_start, tomorrow_start
+                )).fetchall()
         import json
         snapshots = json.loads(job["gateway_snapshot"])
         history = {row["gateway_id"]: dict(row) for row in history_rows}
         stats = {str(x["id"]): {"gateway_id": x["id"], "gateway_name": x["name"], "completed": 0,
                  "correct": 0, "incorrect": 0, "errors": 0, "cancelled": 0, "graded": 0, "accuracy": None,
                  "historical_graded": 0, "historical_correct": 0, "historical_errors": 0,
-                 "historical_cancelled": 0, "historical_accuracy": None} for x in snapshots}
+                 "historical_cancelled": 0, "historical_accuracy": None,
+                 "historical_today_graded": 0, "historical_today_correct": 0,
+                 "historical_today_errors": 0, "historical_today_cancelled": 0,
+                 "historical_today_accuracy": None} for x in snapshots}
         result_runs = []
         for row in runs:
             run = dict(row)
@@ -436,6 +453,9 @@ class Database:
                 "correct": 0, "incorrect": 0, "errors": 0, "cancelled": 0, "graded": 0, "accuracy": None,
                 "historical_graded": 0, "historical_correct": 0, "historical_errors": 0,
                 "historical_cancelled": 0, "historical_accuracy": None,
+                "historical_today_graded": 0, "historical_today_correct": 0,
+                "historical_today_errors": 0, "historical_today_cancelled": 0,
+                "historical_today_accuracy": None,
             })
             stat["completed"] += 1
             if row["status"] == "error":
@@ -456,9 +476,17 @@ class Database:
             stat["historical_correct"] = historical.get("correct", 0) or 0
             stat["historical_errors"] = historical.get("errors", 0) or 0
             stat["historical_cancelled"] = historical.get("cancelled", 0) or 0
+            stat["historical_today_graded"] = historical.get("today_graded", 0) or 0
+            stat["historical_today_correct"] = historical.get("today_correct", 0) or 0
+            stat["historical_today_errors"] = historical.get("today_errors", 0) or 0
+            stat["historical_today_cancelled"] = historical.get("today_cancelled", 0) or 0
             if stat["historical_graded"]:
                 stat["historical_accuracy"] = round(
                     stat["historical_correct"] * 100 / stat["historical_graded"], 1
+                )
+            if stat["historical_today_graded"]:
+                stat["historical_today_accuracy"] = round(
+                    stat["historical_today_correct"] * 100 / stat["historical_today_graded"], 1
                 )
         graded = sum(x["graded"] for x in stats.values())
         correct = sum(x["correct"] for x in stats.values())
@@ -477,17 +505,30 @@ class Database:
 
     def history(self) -> dict[str, Any]:
         with self.connect() as conn:
+            today_start, tomorrow_start = utc_day_bounds()
             aggregate = conn.execute("""SELECT gateway_id, MAX(gateway_name) gateway_name,
                 SUM(CASE WHEN status = 'graded' THEN 1 ELSE 0 END) graded,
                 SUM(CASE WHEN status = 'graded' AND is_correct = 1 THEN 1 ELSE 0 END) correct,
                 SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) errors,
-                SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) cancelled
-                FROM test_runs GROUP BY gateway_id ORDER BY gateway_name COLLATE NOCASE""").fetchall()
+                SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) cancelled,
+                SUM(CASE WHEN status = 'graded' AND created_at >= ? AND created_at < ? THEN 1 ELSE 0 END) today_graded,
+                SUM(CASE WHEN status = 'graded' AND is_correct = 1 AND created_at >= ? AND created_at < ? THEN 1 ELSE 0 END) today_correct,
+                SUM(CASE WHEN status = 'error' AND created_at >= ? AND created_at < ? THEN 1 ELSE 0 END) today_errors,
+                SUM(CASE WHEN status = 'cancelled' AND created_at >= ? AND created_at < ? THEN 1 ELSE 0 END) today_cancelled
+                FROM test_runs GROUP BY gateway_id ORDER BY gateway_name COLLATE NOCASE""", (
+                    today_start, tomorrow_start, today_start, tomorrow_start,
+                    today_start, tomorrow_start, today_start, tomorrow_start
+                )).fetchall()
             recent = conn.execute("""SELECT r.*, j.engine FROM test_runs r JOIN test_jobs j ON j.id=r.job_id
                                   ORDER BY r.id DESC LIMIT 100""").fetchall()
         sites = []
         for row in aggregate:
-            d = dict(row); d["accuracy"] = round(d["correct"] * 100 / d["graded"], 1) if d["graded"] else None
+            d = dict(row)
+            d["accuracy"] = round(d["correct"] * 100 / d["graded"], 1) if d["graded"] else None
+            d["today_accuracy"] = (
+                round(d["today_correct"] * 100 / d["today_graded"], 1)
+                if d["today_graded"] else None
+            )
             sites.append(d)
         return {
             "gateways": sites,
