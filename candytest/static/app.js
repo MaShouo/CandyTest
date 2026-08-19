@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   const $ = (s) => document.querySelector(s);
-  const state = { gateways: [], history: new Map(), runtime: null, webdav: null, syncBusy: false, editing: null, currentId: null };
+  const state = { gateways: [], history: new Map(), runtime: null, webdav: null, syncBusy: false, editing: null, currentId: null, currentJob: null, currentJobId: null, selectedGatewayIds: new Set() };
   const efforts = { pi: ["off", "minimal", "low", "medium", "high", "xhigh", "max"], codex: ["low", "medium", "high", "xhigh", "max", "ultra"] };
 
   function node(tag, text, className) { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (className) el.className = className; return el; }
@@ -22,7 +22,7 @@
   }
   function accuracyBadge(value) { const low = value != null && value < 80; return node("span", pct(value), `badge ${low ? "error" : "ok"}`); }
   function runVisual(run) {
-    if (run.status === "error") return { text: "API 失败", className: "warn" };
+    if (run.status === "error") return run.error_kind === "gateway_unavailable" ? { text: "中转站不可用", className: "warn" } : { text: "API 错误", className: "warn" };
     if (run.status === "cancelled") return { text: "已中断", className: "warn" };
     return { text: run.is_correct ? "正确" : "错误", className: "" };
   }
@@ -69,39 +69,83 @@
   }
   function showGateway(gateway) { state.editing = gateway || null; const form = $("#gatewayForm"); form.reset(); $("#gatewayTitle").textContent = gateway ? `编辑：${gateway.name}` : "添加中转站"; if (gateway) { form.name.value = gateway.name; form.base_url.value = gateway.base_url; form.model.value = gateway.model; form.enabled.checked = gateway.enabled; } $("#gatewayPanel").hidden = false; form.name.focus(); }
   async function removeGateway(gateway) { if (!confirm(`删除“${gateway.name}”？历史测试记录会保留。`)) return; try { await api(`/api/gateways/${gateway.id}`, { method: "DELETE" }); flash("中转站已删除。"); await loadGateways(); } catch (e) { flash(e.message, true); } }
-  function statCard(site, historical = false, rounds = null) {
+  function statCard(site, historical = false, rounds = null, selectable = false) {
     const currentLow = site.accuracy != null && site.accuracy < 80;
     const historyLow = !historical && site.historical_accuracy != null && site.historical_accuracy < 80;
     const low = currentLow || historyLow;
-    const div = node("article", undefined, `stat ${low ? "low" : ""}`);
+    const selected = selectable && state.selectedGatewayIds.has(Number(site.gateway_id));
+    const classes = ["stat"];
+    if (low) classes.push("low");
+    if (selectable) classes.push("stat-selectable");
+    if (selected) classes.push("selected");
+    if (selectable && state.selectedGatewayIds.size > 0 && !selected) classes.push("not-selected");
+    const div = node("article", undefined, classes.join(" "));
+    if (selectable) {
+      div.dataset.gatewayId = String(site.gateway_id);
+      div.tabIndex = 0;
+      div.setAttribute("role", "button");
+      div.setAttribute("aria-pressed", String(selected));
+      div.setAttribute("aria-label", `${site.gateway_name || site.name}筛选${selected ? "已选中" : "未选中"}`);
+    }
     div.append(node("h3", site.gateway_name || site.name));
     div.append(node("strong", pct(site.accuracy)));
+    const statDetails = node("div", undefined, "stat-details");
+    if (!historical) statDetails.append(node("p", `进度 ${site.completed || 0} / ${rounds ?? "—"}`));
     if (historical) {
-      div.append(node("p", `正确 ${site.correct || 0} / 已判分 ${site.graded || 0} · API 失败 ${site.errors || 0}（不计正确率） · 中断 ${site.cancelled || 0}`));
+      statDetails.append(node("p", `正确 ${site.correct || 0} / 已判分 ${site.graded || 0} · API 错误 ${site.errors || 0} · 中断 ${site.cancelled || 0}`));
     } else {
-      div.append(node("p", `进度 ${site.completed || 0} / ${rounds ?? "—"}`));
-      div.append(node("p", `本任务：正确 ${site.correct || 0} / 已判分 ${site.graded || 0} · API 失败 ${site.errors || 0}（不计正确率） · 中断 ${site.cancelled || 0}`));
-      div.append(node("p", `历史：${pct(site.historical_accuracy)}（${site.historical_correct || 0} / ${site.historical_graded || 0}，API 失败 ${site.historical_errors || 0} 不计正确率，中断 ${site.historical_cancelled || 0}）`));
+      statDetails.append(node("p", `本任务：正确 ${site.correct || 0} / 已判分 ${site.graded || 0} · API 错误 ${site.errors || 0} · 中断 ${site.cancelled || 0}`));
+      statDetails.append(node("p", `历史：${pct(site.historical_accuracy)}（${site.historical_correct || 0} / ${site.historical_graded || 0} · API 错误 ${site.historical_errors || 0} · 中断 ${site.historical_cancelled || 0}）`));
     }
-    if (currentLow) div.append(node("p", historical ? "历史正确率低于 80%，请重点复核。" : "当前正确率低于 80%，请重点复核。", "warn"));
-    if (historyLow) div.append(node("p", "历史正确率低于 80%，请重点复核。", "warn"));
-    if ((site.errors || 0) > 0) div.append(node("p", `${site.errors} 次 API 调用失败；记录已保存，不计入正确率。`, "warn"));
+    div.append(statDetails);
+    const alerts = node("div", undefined, "stat-alerts");
+    if (currentLow) alerts.append(node("p", historical ? "历史正确率低于 80%，请重点复核。" : "当前正确率低于 80%，请重点复核。", "warn"));
+    if (historyLow) alerts.append(node("p", "历史正确率低于 80%，请重点复核。", "warn"));
+    div.append(alerts);
     return div;
   }
+  function toggleGatewayFilter(stat) {
+    const gatewayId = Number(stat.dataset.gatewayId);
+    if (!Number.isInteger(gatewayId) || !state.currentJob) return;
+    if (state.selectedGatewayIds.has(gatewayId)) state.selectedGatewayIds.delete(gatewayId);
+    else state.selectedGatewayIds.add(gatewayId);
+    renderJob(state.currentJob);
+  }
+
   function renderJob(job) {
     updateJobControls(job);
-    if (!job) { $("#jobCaption").textContent = "尚未运行测试。API 调用失败会保存记录，但不计入正确率。"; $("#jobSummary").textContent = "—"; clear($("#jobStats")); const td = node("td", "暂无测试记录", "empty"); td.colSpan = 9; const tr = document.createElement("tr"); tr.append(td); clear($("#runRows"), [tr]); return; }
+    if (!job) {
+      state.currentJob = null;
+      state.currentJobId = null;
+      state.selectedGatewayIds.clear();
+      $("#jobCaption").textContent = "尚未运行测试。API 错误会保存记录。";
+      $("#jobSummary").textContent = "—";
+      clear($("#jobStats"));
+      const td = node("td", "暂无测试记录", "empty"); td.colSpan = 9;
+      const tr = document.createElement("tr"); tr.append(td); clear($("#runRows"), [tr]);
+      return;
+    }
+    if (state.currentJobId !== job.id) {
+      state.currentJobId = job.id;
+      state.selectedGatewayIds.clear();
+    }
+    const validGatewayIds = new Set(job.gateways.map(site => Number(site.gateway_id)));
+    for (const gatewayId of state.selectedGatewayIds) if (!validGatewayIds.has(gatewayId)) state.selectedGatewayIds.delete(gatewayId);
+    state.currentJob = job;
     $("#jobCaption").textContent = `任务 #${job.id} · ${job.engine} · ${job.mode === "parallel" ? "并行" : "串行"} · 每站 ${job.rounds} 轮 · ${jobStatus(job.status)}`;
-    const summary = $("#jobSummary"); summary.textContent = `总正确率 ${pct(job.summary.accuracy)} · ${job.summary.correct}/${job.summary.graded} · API 失败 ${job.summary.errors}（不计正确率） · 中断 ${job.summary.cancelled || 0} · 进度 ${job.summary.completed}/${job.summary.planned}`; summary.className = `metric ${job.summary.accuracy != null && job.summary.accuracy < 80 ? "low" : ""}`;
-    clear($("#jobStats"), job.gateways.map(site => statCard(site, false, job.rounds)));
+    const summary = $("#jobSummary"); summary.textContent = `总正确率 ${pct(job.summary.accuracy)} · ${job.summary.correct}/${job.summary.graded} · API 错误 ${job.summary.errors} · 中断 ${job.summary.cancelled || 0} · 进度 ${job.summary.completed}/${job.summary.planned}`; summary.className = `metric ${job.summary.accuracy != null && job.summary.accuracy < 80 ? "low" : ""}`;
+    clear($("#jobStats"), job.gateways.map(site => statCard(site, false, job.rounds, true)));
     const opened = openDetailKeys($("#runRows"));
-    const rows = job.runs.map(run => { const tr = document.createElement("tr"), visual = runVisual(run); tr.append(node("td", run.gateway_name), node("td", String(run.round_number)), node("td", visual.text, visual.className), node("td", run.elapsed_seconds == null ? "—" : `${run.elapsed_seconds.toFixed(2)}s`), node("td", num(run.input_tokens)), node("td", num(run.output_tokens)), node("td", num(run.reasoning_tokens)), node("td", num(run.total_tokens))); const d = node("td"); d.append(details(run.answer, run.error, `job-${job.id}-run-${run.id}`, opened)); tr.append(d); return tr; });
-    if (!rows.length) { const tr = document.createElement("tr"), td = node("td", "等待第一轮完成…", "empty"); td.colSpan = 9; tr.append(td); rows.push(tr); } clear($("#runRows"), rows);
+    const visibleRuns = state.selectedGatewayIds.size === 0 ? job.runs : job.runs.filter(run => state.selectedGatewayIds.has(Number(run.gateway_id)));
+    const rows = visibleRuns.map(run => { const tr = document.createElement("tr"), visual = runVisual(run); tr.append(node("td", run.gateway_name), node("td", String(run.round_number)), node("td", visual.text, visual.className), node("td", run.elapsed_seconds == null ? "—" : `${run.elapsed_seconds.toFixed(2)}s`), node("td", num(run.input_tokens)), node("td", num(run.output_tokens)), node("td", num(run.reasoning_tokens)), node("td", num(run.total_tokens))); const d = node("td"); d.append(details(run.answer, run.error, `job-${job.id}-run-${run.id}`, opened)); tr.append(d); return tr; });
+    if (!rows.length) { const tr = document.createElement("tr"), td = node("td", state.selectedGatewayIds.size ? "所选中转站暂无测试记录" : "等待第一轮完成…", "empty"); td.colSpan = 9; tr.append(td); rows.push(tr); } clear($("#runRows"), rows);
   }
   function renderHistory(data) { state.history = new Map(data.gateways.map(x => [x.gateway_id, x])); clear($("#historyStats"), data.gateways.length ? data.gateways.map(site => statCard(site, true)) : [node("p", "暂无历史判分记录。", "empty")]); const opened = openDetailKeys($("#historyRows")); const rows = data.runs.map(run => { const tr = document.createElement("tr"), visual = runVisual(run); tr.append(node("td", run.gateway_name), node("td", run.engine), node("td", String(run.round_number)), node("td", visual.text, visual.className), node("td", run.is_correct == null ? "—" : run.is_correct ? "正确" : "错误"), node("td", run.elapsed_seconds == null ? "—" : `${run.elapsed_seconds.toFixed(2)}s`), node("td", run.created_at)); const d = node("td"); d.append(details(run.answer, run.error, `history-run-${run.id}`, opened)); tr.append(d); return tr; }); if (!rows.length) { const tr = document.createElement("tr"), td = node("td", "暂无历史记录", "empty"); td.colSpan = 8; tr.append(td); rows.push(tr); } clear($("#historyRows"), rows); renderGateways(); }
   async function loadGateways() { const data = await api("/api/gateways"); state.gateways = data.gateways; renderGateways(); }
   async function loadHistory() { renderHistory(await api("/api/history")); }
   async function refreshCurrent() { const data = await api("/api/jobs/current"); renderJob(data.job); state.currentId = data.job?.id || null; if (["completed", "failed", "cancelled"].includes(data.job?.status)) await loadHistory(); }
+  $("#jobStats").onclick = (event) => { const stat = event.target.closest(".stat-selectable"); if (stat && $("#jobStats").contains(stat)) toggleGatewayFilter(stat); };
+  $("#jobStats").onkeydown = (event) => { if (event.key !== "Enter" && event.key !== " ") return; const stat = event.target.closest(".stat-selectable"); if (!stat || !$("#jobStats").contains(stat)) return; event.preventDefault(); toggleGatewayFilter(stat); };
   $("#newGateway").onclick = () => showGateway(); $("#cancelGateway").onclick = () => { $("#gatewayPanel").hidden = true; };
   $("#selectAllGateways").onchange = (event) => { for (const checkbox of document.querySelectorAll("#gatewayRows input[type=checkbox]:not(:disabled)")) checkbox.checked = event.currentTarget.checked; syncGatewaySelectAll(); };
   $("#gatewayRows").onchange = (event) => { if (event.target.matches("input[type=checkbox]")) syncGatewaySelectAll(); };

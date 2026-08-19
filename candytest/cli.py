@@ -124,9 +124,51 @@ def _assistant_text(message: Any) -> str:
     return "".join(part.get("text", "") for part in content if isinstance(part, dict) and part.get("type") == "text")
 
 
+def _error_text(value: Any) -> str:
+    """Extract a human-readable error from the JSONL shapes used by both CLIs."""
+    if isinstance(value, str):
+        return value.strip()
+    if not isinstance(value, dict):
+        return ""
+    for key in ("errorMessage", "finalError", "message", "error", "detail", "details", "reason"):
+        text = _error_text(value.get(key))
+        if text:
+            return text
+    return ""
+
+
+def _pi_message_error(message: Any) -> str:
+    if not isinstance(message, dict) or message.get("role") != "assistant":
+        return ""
+    stop_reason = message.get("stopReason", message.get("stop_reason"))
+    if isinstance(stop_reason, str) and stop_reason.lower() in {"error", "aborted"}:
+        return _error_text(message) or f"Pi assistant 响应异常结束：{stop_reason}"
+    return ""
+
+
 def parse_pi_jsonl(stdout: str) -> dict[str, Any]:
     answer = ""
+    error = ""
     usage: dict[str, int | None] = {"input_tokens": None, "output_tokens": None, "total_tokens": None}
+
+    def process_message(message: Any) -> None:
+        nonlocal answer, error, usage
+        if not isinstance(message, dict):
+            return
+        text = _assistant_text(message)
+        if text:
+            answer = text
+        current = message.get("usage")
+        usage = {"input_tokens": _number(current, "input", "input_tokens"),
+                 "output_tokens": _number(current, "output", "output_tokens"),
+                 "total_tokens": _number(current, "totalTokens", "total_tokens", "total")}
+        message_error = _pi_message_error(message)
+        if message_error:
+            error = message_error
+        elif message.get("role") == "assistant":
+            # A later normal assistant message is the successful retry result.
+            error = ""
+
     for raw in stdout.splitlines():
         try:
             event = json.loads(raw.strip())
@@ -134,26 +176,36 @@ def parse_pi_jsonl(stdout: str) -> dict[str, Any]:
             continue
         if not isinstance(event, dict):
             continue
-        if event.get("type") in {"message_end", "turn_end"}:
+        event_type = event.get("type")
+        if event_type in {"message_end", "turn_end"}:
             message = event.get("message")
-            answer = _assistant_text(message) or answer
-            current = message.get("usage") if isinstance(message, dict) else None
-            usage = {"input_tokens": _number(current, "input", "input_tokens"),
-                     "output_tokens": _number(current, "output", "output_tokens"),
-                     "total_tokens": _number(current, "totalTokens", "total_tokens", "total")}
-        elif event.get("type") == "agent_end":
-            for message in reversed(event.get("messages", [])):
-                found = _assistant_text(message)
-                if found:
-                    answer = found
-                    break
+            process_message(message)
+            event_stop_reason = event.get("stopReason", event.get("stop_reason"))
+            if isinstance(event_stop_reason, str) and event_stop_reason.lower() in {"error", "aborted"}:
+                error = _error_text(event) or _pi_message_error(message) or f"Pi assistant 响应异常结束：{event_stop_reason}"
+        elif event_type == "agent_end":
+            messages = event.get("messages", [])
+            if isinstance(messages, list):
+                for message in messages:
+                    process_message(message)
+        elif event_type == "auto_retry_end":
+            if event.get("success") is True:
+                error = ""
+            elif event.get("success") is False:
+                error = _error_text(event) or "Pi 自动重试失败"
+        elif event_type in {"error", "agent_error"}:
+            error = _error_text(event) or "Pi 调用失败"
     if usage["total_tokens"] is None and usage["input_tokens"] is not None and usage["output_tokens"] is not None:
         usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
-    return {"answer": answer, **usage, "reasoning_tokens": None}
+    result: dict[str, Any] = {"answer": answer, **usage, "reasoning_tokens": None}
+    if error:
+        result["_error"] = error
+    return result
 
 
 def parse_codex_jsonl(stdout: str) -> dict[str, Any]:
     answer = ""
+    error = ""
     usage: dict[str, int | None] = {"input_tokens": None, "output_tokens": None, "reasoning_tokens": None, "total_tokens": None}
     for raw in stdout.splitlines():
         try:
@@ -162,19 +214,27 @@ def parse_codex_jsonl(stdout: str) -> dict[str, Any]:
             continue
         if not isinstance(event, dict):
             continue
-        if event.get("type") == "item.completed":
+        event_type = event.get("type")
+        if event_type == "item.completed":
             item = event.get("item")
             if isinstance(item, dict) and item.get("type") == "agent_message" and isinstance(item.get("text"), str):
                 answer = item["text"]
-        elif event.get("type") == "turn.completed":
+        elif event_type == "turn.completed":
             current = event.get("usage")
             usage = {"input_tokens": _number(current, "input_tokens", "input"),
                      "output_tokens": _number(current, "output_tokens", "output"),
                      "reasoning_tokens": _number(current, "reasoning_output_tokens", "reasoning_tokens"),
                      "total_tokens": _number(current, "total_tokens", "total")}
+            # Codex may emit an item-level transient error before a completed turn.
+            error = ""
+        elif event_type in {"turn.failed", "item.failed", "error"}:
+            error = _error_text(event) or _error_text(event.get("item")) or f"Codex {event_type}"
     if usage["total_tokens"] is None and usage["input_tokens"] is not None and usage["output_tokens"] is not None:
         usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
-    return {"answer": answer, **usage}
+    result: dict[str, Any] = {"answer": answer, **usage}
+    if error:
+        result["_error"] = error
+    return result
 
 
 def _pi_models_config(base_url: str, model: str) -> str:
@@ -279,5 +339,12 @@ def invoke(engine: str, gateway: dict[str, Any], model: str, effort: str,
             detail = redact((proc.stderr or proc.stdout or "CLI 调用失败").strip(), key)
             raise RuntimeError(detail or "CLI 调用失败")
         parsed = parser(proc.stdout)
+        terminal_error = parsed.pop("_error", None)
+        if terminal_error:
+            detail = redact(str(terminal_error).strip(), key)
+            raise RuntimeError(detail or "CLI 调用失败")
+        if not isinstance(parsed.get("answer"), str) or not parsed["answer"].strip():
+            detail = redact((proc.stderr or proc.stdout or "").strip(), key)
+            raise RuntimeError(detail or "CLI 未返回有效的 assistant 回答")
         parsed["elapsed_seconds"] = elapsed
         return parsed

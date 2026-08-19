@@ -39,12 +39,12 @@
     </form>
   </section>
 
-  <section class="panel"><div class="section-title"><div><h2>当前任务</h2><p id="jobCaption">尚未运行测试。API 调用失败会保存记录，但不计入正确率。</p></div><div class="current-actions"><span id="jobSummary" class="metric">—</span><button id="stopJob" type="button" class="stop" hidden>中断测试</button></div></div>
+  <section class="panel"><div class="section-title"><div><h2>当前任务</h2><p id="jobCaption">尚未运行测试。API 错误会保存记录。</p></div><div class="current-actions"><span id="jobSummary" class="metric">—</span><button id="stopJob" type="button" class="stop" hidden>中断测试</button></div></div>
     <div id="jobStats" class="stat-grid"></div>
     <div class="table-wrap"><table><thead><tr><th>站点</th><th>轮次</th><th>状态</th><th>耗时</th><th>Input</th><th>Output</th><th>Reasoning</th><th>Total</th><th>详情</th></tr></thead><tbody id="runRows"><tr><td colspan="9" class="empty">暂无测试记录</td></tr></tbody></table></div>
   </section>
 
-  <section class="panel"><div class="section-title"><div><h2>历史正确率</h2><p>仅按中转站聚合，跨模型、CLI 和任务汇总；API 调用失败会保存为 ERROR，但不计入当前任务或历史正确率。</p></div><button id="clearHistory" class="danger secondary">清空历史</button></div>
+  <section class="panel"><div class="section-title"><div><h2>历史正确率</h2><p>仅按中转站聚合，跨模型、CLI 和任务汇总。</p></div><button id="clearHistory" class="danger secondary">清空历史</button></div>
     <div id="historyStats" class="stat-grid"></div>
     <details><summary>最近 100 条历史运行记录</summary><div class="table-wrap"><table><thead><tr><th>站点</th><th>引擎</th><th>轮次</th><th>状态</th><th>正确</th><th>耗时</th><th>时间</th><th>详情</th></tr></thead><tbody id="historyRows"></tbody></table></div></details>
   </section>

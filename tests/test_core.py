@@ -23,7 +23,7 @@ from candytest import PROMPT
 from candytest import cli
 from candytest.jobs import JobManager
 from candytest.cli import InvocationCancelled
-from candytest.storage import Database, utcnow
+from candytest.storage import Database, classify_error, utcnow
 
 
 SECRET = "dummy-test-key"
@@ -94,6 +94,48 @@ class CliParsingAndIsolationTests(unittest.TestCase):
         self.assertEqual(parsed["answer"], "fallback 21")
         self.assertIsNone(parsed["total_tokens"])
 
+    def test_pi_retry_success_clears_prior_terminal_error(self):
+        stdout = "\n".join((
+            json.dumps({"type": "message_end", "message": {
+                "role": "assistant", "content": [], "stopReason": "error",
+                "errorMessage": "503 Service Unavailable",
+            }}),
+            json.dumps({"type": "message_end", "message": {
+                "role": "assistant", "content": [{"type": "text", "text": "retry answer 21"}],
+                "stopReason": "stop",
+            }}),
+            json.dumps({"type": "auto_retry_end", "success": True}),
+        ))
+        parsed = cli.parse_pi_jsonl(stdout)
+        self.assertEqual(parsed["answer"], "retry answer 21")
+        self.assertNotIn("_error", parsed)
+
+    def test_invoke_rejects_zero_exit_pi_terminal_error_and_redacts_key(self):
+        stdout = json.dumps({"type": "message_end", "message": {
+            "role": "assistant", "content": [], "stopReason": "error",
+            "errorMessage": f"503 Service Unavailable {SECRET}",
+        }})
+        with patch("candytest.cli.resolve_executable", return_value="fake-pi"), \
+             patch("candytest.cli.subprocess.run", return_value=subprocess.CompletedProcess([], 0, stdout, "")):
+            with self.assertRaisesRegex(RuntimeError, "503 Service Unavailable") as raised:
+                cli.invoke("pi", gateway(), "test-model", "medium", 1)
+        self.assertNotIn(SECRET, str(raised.exception))
+        self.assertIn("已脱敏 API Key", str(raised.exception))
+
+    def test_invoke_rejects_zero_exit_without_assistant_answer(self):
+        with patch("candytest.cli.resolve_executable", return_value="fake-pi"), \
+             patch("candytest.cli.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", f"network error {SECRET}")):
+            with self.assertRaisesRegex(RuntimeError, "network error") as raised:
+                cli.invoke("pi", gateway(), "test-model", "medium", 1)
+        self.assertNotIn(SECRET, str(raised.exception))
+        self.assertIn("已脱敏 API Key", str(raised.exception))
+
+    def test_invoke_preserves_zero_exit_plaintext_gateway_error(self):
+        with patch("candytest.cli.resolve_executable", return_value="fake-pi"), \
+             patch("candytest.cli.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "502 Bad Gateway", "")):
+            with self.assertRaisesRegex(RuntimeError, "502 Bad Gateway"):
+                cli.invoke("pi", gateway(), "test-model", "medium", 1)
+
     def test_parse_codex_jsonl_reads_last_message_and_usage(self):
         stdout = "\n".join((
             "noise",
@@ -108,6 +150,25 @@ class CliParsingAndIsolationTests(unittest.TestCase):
             "answer": "final 21", "input_tokens": 7, "output_tokens": 8,
             "reasoning_tokens": 4, "total_tokens": 15,
         })
+
+    def test_parse_codex_jsonl_recognizes_failed_events_and_completed_turn_clears_transient_error(self):
+        failures = (
+            {"type": "turn.failed", "error": {"message": "503 Service Unavailable"}},
+            {"type": "item.failed", "item": {"error": {"message": "ECONNREFUSED"}}},
+            {"type": "error", "message": "Gateway Timeout"},
+        )
+        for event in failures:
+            with self.subTest(event_type=event["type"]):
+                parsed = cli.parse_codex_jsonl(json.dumps(event))
+                self.assertIn("_error", parsed)
+        transient = "\n".join((
+            json.dumps(failures[1]),
+            json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "21"}}),
+            json.dumps({"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 1}}),
+        ))
+        parsed = cli.parse_codex_jsonl(transient)
+        self.assertEqual(parsed["answer"], "21")
+        self.assertNotIn("_error", parsed)
 
     def test_invoke_keeps_key_out_of_pi_and_codex_configs_and_arguments(self):
         captures: list[tuple[list[str], str, dict[str, str]]] = []
@@ -209,6 +270,16 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn("< 80", source)
         self.assertIn("textContent", source)
         self.assertNotIn("innerHTML", source)
+        self.assertIn('run.error_kind === "gateway_unavailable"', source)
+        self.assertIn("中转站不可用", source)
+        self.assertIn('text: "API 错误"', source)
+        self.assertIn("API 错误", source)
+        self.assertIn("selectedGatewayIds", source)
+        self.assertIn('statCard(site, false, job.rounds, true)', source)
+        self.assertIn('state.selectedGatewayIds.size === 0', source)
+        self.assertIn('job.runs.filter(run => state.selectedGatewayIds.has(Number(run.gateway_id)))', source)
+        self.assertIn("所选中转站暂无测试记录", source)
+        self.assertNotIn("不计正确率", source)
         self.assertIn('details[open][data-detail-key]', source)
         self.assertIn("d.open = opened.has(key)", source)
         self.assertIn('input[type=checkbox]:checked', source)
@@ -226,6 +297,15 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertNotIn('class="panel sync-panel"', template)
         self.assertNotIn('id="webdavForm"', template)
         self.assertNotIn('id="proxyForm"', template)
+        self.assertNotIn("不计正确率", template)
+        self.assertIn("API 错误会保存记录", template)
+        style = (Path(__file__).parents[1] / "candytest/static/style.css").read_text(encoding="utf-8")
+        self.assertIn(".stat-grid{display:grid;grid-template-columns:1fr", style)
+        self.assertIn(".stat-details", style)
+        self.assertIn(".stat-alerts", style)
+        self.assertIn(".stat-selectable", style)
+        self.assertIn(".stat-selectable.selected", style)
+        self.assertIn(".stat-selectable.not-selected", style)
         self.assertNotIn('innerHTML', source)
         self.assertIn('syncGatewaySelectAll', source)
         self.assertIn('input[type=checkbox]:not(:disabled)', source)
@@ -300,6 +380,27 @@ class StorageTests(unittest.TestCase):
         )
         self.assertEqual(aggregate["accuracy"], 50.0)
         self.assertEqual(len(history["runs"]), 4)
+
+    def test_error_classifier_identifies_gateway_outages_but_not_auth_or_rate_limits(self):
+        self.assertEqual(classify_error("HTTP 503 Service Unavailable"), "gateway_unavailable")
+        self.assertEqual(classify_error("request failed: ECONNREFUSED"), "gateway_unavailable")
+        self.assertEqual(classify_error("HTTP 401 from upstream"), "api_failure")
+        self.assertEqual(classify_error("HTTP 429: Gateway Timeout"), "api_failure")
+
+    def test_job_and_history_runs_derive_error_kind_without_schema_change(self):
+        self.create_site()
+        job_id = self.db.create_job(job_payload())
+        self.db.add_run(run_payload(job_id, correct=1))
+        outage = run_payload(job_id, status="error", correct=None)
+        outage["error"] = "503 Service Unavailable"
+        self.db.add_run(outage)
+
+        current = self.db.job(job_id)
+        self.assertEqual(current["runs"][0]["error_kind"], None)
+        self.assertEqual(current["runs"][1]["error_kind"], "gateway_unavailable")
+        history = self.db.history()
+        kinds = {run["status"]: run["error_kind"] for run in history["runs"]}
+        self.assertEqual(kinds, {"graded": None, "error": "gateway_unavailable"})
 
     def test_accuracy_threshold_is_low_below_80_and_not_at_80(self):
         site = self.create_site()

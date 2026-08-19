@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sqlite3
 import stat
@@ -14,6 +15,35 @@ from typing import Any
 
 CURRENT_SCHEMA_VERSION = 2
 REQUIRED_SNAPSHOT_TABLES = frozenset({"gateways", "test_jobs", "test_runs", "app_settings"})
+
+_AUTH_OR_RATE_LIMIT = re.compile(r"(?<!\d)(?:401|429)(?!\d)")
+_GATEWAY_UNAVAILABLE = re.compile(
+    r"(?<!\d)(?:500|502|503|504|521|522|523|524|525|526|529)(?!\d)"
+    r"|\bbad\s+gateway\b|\bservice\s+unavailable\b|\bgateway\s+timeout\b"
+    r"|\binternal\s+server\s+error\b|\bupstream\b"
+    r"|(?:无可用(?:渠道|通道|提供商)|(?:渠道|通道|提供商)不可用|中转站不可用)"
+    r"|\bno\s+available\s+(?:channels?|providers?)\b|\b(?:channels?|providers?)\s+unavailable\b"
+    r"|\b(?:econnrefused|enotfound|etimedout|econnreset)\b"
+    r"|\bfetch\s+(?:failed|error)\b|\bnetwork\s+(?:error|failure|unavailable)\b"
+    r"|\b(?:connection|connect)\s+(?:refused|reset|failed|error|closed|aborted|unavailable)\b"
+    r"|\b(?:dns|name\s+resolution)\s+(?:failed|failure|error|lookup|unavailable)\b"
+    r"|\b(?:request\s+)?(?:timed?\s*out|timeout(?:error)?)\b"
+    r"|(?:网络|连接).{0,12}(?:错误|异常|失败|不可用|超时|被拒绝|重置)|请求超时",
+    re.IGNORECASE,
+)
+
+
+def classify_error(error: str | None) -> str:
+    """Classify persisted CLI errors without changing the database schema."""
+    text = error or ""
+    # An auth or rate-limit status has a more useful, non-outage meaning even
+    # when a gateway includes generic upstream wording in the same response.
+    if _AUTH_OR_RATE_LIMIT.search(text):
+        return "api_failure"
+    if _GATEWAY_UNAVAILABLE.search(text):
+        return "gateway_unavailable"
+    return "api_failure"
+
 
 
 def utcnow() -> str:
@@ -399,6 +429,7 @@ class Database:
         for row in runs:
             run = dict(row)
             run["is_correct"] = None if run["is_correct"] is None else bool(run["is_correct"])
+            run["error_kind"] = classify_error(run["error"]) if run["status"] == "error" else None
             result_runs.append(run)
             stat = stats.setdefault(str(row["gateway_id"]), {
                 "gateway_id": row["gateway_id"], "gateway_name": row["gateway_name"], "completed": 0,
@@ -458,7 +489,13 @@ class Database:
         for row in aggregate:
             d = dict(row); d["accuracy"] = round(d["correct"] * 100 / d["graded"], 1) if d["graded"] else None
             sites.append(d)
-        return {"gateways": sites, "runs": [dict(r) for r in recent]}
+        return {
+            "gateways": sites,
+            "runs": [
+                {**dict(row), "error_kind": classify_error(row["error"]) if row["status"] == "error" else None}
+                for row in recent
+            ],
+        }
 
     def clear_history(self) -> None:
         with self.connect() as conn:
