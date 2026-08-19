@@ -647,6 +647,22 @@ def create_app(data_dir: Path | None = None) -> Flask:
     def history():
         return jsonify(db.history())
 
+    @app.delete("/api/history/gateways/<int:gateway_id>")
+    def clear_gateway_history(gateway_id: int):
+        conflict = sync_mutation_error()
+        if conflict:
+            return conflict
+        data, error = json_body()
+        if error: return error
+        if data.get("confirm") is not True:
+            return api_error("CONFIRM_REQUIRED", "请确认删除该中转站的历史记录")
+        if db.active_job() is not None:
+            return api_error("JOB_CONFLICT", "测试任务运行时不能删除历史", 409)
+        deleted = db.clear_gateway_history(gateway_id)
+        if not deleted:
+            return api_error("HISTORY_NOT_FOUND", "该中转站没有可删除的历史记录", 404)
+        return jsonify({"ok": True, "deleted": deleted})
+
     @app.delete("/api/history")
     def clear_history():
         conflict = sync_mutation_error()

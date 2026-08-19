@@ -497,6 +497,16 @@ class Database:
             ],
         }
 
+    def clear_gateway_history(self, gateway_id: int) -> int:
+        """Delete persisted runs for one gateway while preserving its configuration."""
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            deleted = conn.execute(
+                "DELETE FROM test_runs WHERE gateway_id=?", (gateway_id,)
+            ).rowcount
+            conn.execute("COMMIT")
+        return int(deleted)
+
     def clear_history(self) -> None:
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")

@@ -69,6 +69,23 @@
   }
   function showGateway(gateway) { state.editing = gateway || null; const form = $("#gatewayForm"); form.reset(); $("#gatewayTitle").textContent = gateway ? `编辑：${gateway.name}` : "添加中转站"; if (gateway) { form.name.value = gateway.name; form.base_url.value = gateway.base_url; form.model.value = gateway.model; form.enabled.checked = gateway.enabled; } $("#gatewayPanel").hidden = false; form.name.focus(); }
   async function removeGateway(gateway) { if (!confirm(`删除“${gateway.name}”？历史测试记录会保留。`)) return; try { await api(`/api/gateways/${gateway.id}`, { method: "DELETE" }); flash("中转站已删除。"); await loadGateways(); } catch (e) { flash(e.message, true); } }
+  async function removeGatewayHistory(site, button) {
+    const name = site.gateway_name || site.name;
+    const total = (site.graded || 0) + (site.errors || 0) + (site.cancelled || 0);
+    if (!confirm(`确认删除“${name}”的全部 ${total} 条历史记录？中转站配置不会删除。`)) return;
+    button.disabled = true;
+    button.textContent = "删除中…";
+    try {
+      const result = await api(`/api/history/gateways/${site.gateway_id}`, { method: "DELETE", body: JSON.stringify({ confirm: true }) });
+      flash(`已删除“${name}”的 ${result.deleted} 条历史记录。`);
+      await loadHistory();
+      await refreshCurrent();
+    } catch (e) {
+      flash(e.message, true);
+      button.disabled = false;
+      button.textContent = "删除记录";
+    }
+  }
   function statCard(site, historical = false, rounds = null, selectable = false) {
     const currentLow = site.accuracy != null && site.accuracy < 80;
     const historyLow = !historical && site.historical_accuracy != null && site.historical_accuracy < 80;
@@ -102,6 +119,15 @@
     if (currentLow) alerts.append(node("p", historical ? "历史正确率低于 80%，请重点复核。" : "当前正确率低于 80%，请重点复核。", "warn"));
     if (historyLow) alerts.append(node("p", "历史正确率低于 80%，请重点复核。", "warn"));
     div.append(alerts);
+    if (historical) {
+      const actions = node("div", undefined, "stat-actions");
+      const remove = node("button", "删除记录", "secondary danger");
+      remove.type = "button";
+      remove.setAttribute("aria-label", `删除${site.gateway_name || site.name}的历史记录`);
+      remove.onclick = () => removeGatewayHistory(site, remove);
+      actions.append(remove);
+      div.append(actions);
+    }
     return div;
   }
   function toggleGatewayFilter(stat) {

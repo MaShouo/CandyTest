@@ -278,6 +278,10 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn('statCard(site, false, job.rounds, true)', source)
         self.assertIn('state.selectedGatewayIds.size === 0', source)
         self.assertIn('job.runs.filter(run => state.selectedGatewayIds.has(Number(run.gateway_id)))', source)
+        self.assertIn("removeGatewayHistory", source)
+        self.assertIn("删除记录", source)
+        self.assertIn("/api/history/gateways/", source)
+        self.assertIn("中转站配置不会删除", source)
         self.assertIn("所选中转站暂无测试记录", source)
         self.assertNotIn("不计正确率", source)
         self.assertIn('details[open][data-detail-key]', source)
@@ -306,6 +310,7 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn(".stat-selectable", style)
         self.assertIn(".stat-selectable.selected", style)
         self.assertIn(".stat-selectable.not-selected", style)
+        self.assertIn(".stat-actions", style)
         self.assertNotIn('innerHTML', source)
         self.assertIn('syncGatewaySelectAll', source)
         self.assertIn('input[type=checkbox]:not(:disabled)', source)
@@ -688,6 +693,44 @@ class ApiTests(unittest.TestCase):
             response = self.client.post("/api/jobs", json={"engine": "pi", "gateway_ids": [site_id]})
         self.assertEqual(response.status_code, 201)
         self.assertEqual(start.call_args.args[-1], PROXY)
+
+    def test_gateway_history_can_be_deleted_independently(self):
+        first_id = self.add_site()
+        second = self.client.post(
+            "/api/gateways", json={**self.site_body, "name": "另一个中转站"}
+        )
+        self.assertEqual(second.status_code, 201)
+        second_id = second.get_json()["gateway"]["id"]
+        job_id = self.db.create_job(job_payload())
+        self.db.set_job_status(job_id, "running")
+        self.db.add_run(run_payload(job_id, gateway_id=first_id, name="测试站"))
+        self.db.add_run(run_payload(job_id, gateway_id=second_id, name="另一个中转站"))
+
+        active = self.client.delete(
+            f"/api/history/gateways/{first_id}", json={"confirm": True}
+        )
+        self.assertEqual((active.status_code, active.get_json()["error"]["code"]), (409, "JOB_CONFLICT"))
+        self.db.set_job_status(job_id, "completed")
+        unconfirmed = self.client.delete(
+            f"/api/history/gateways/{first_id}", json={"confirm": False}
+        )
+        self.assertEqual((unconfirmed.status_code, unconfirmed.get_json()["error"]["code"]), (400, "CONFIRM_REQUIRED"))
+
+        deleted = self.client.delete(
+            f"/api/history/gateways/{first_id}", json={"confirm": True}
+        )
+        self.assertEqual(deleted.status_code, 200)
+        self.assertEqual(deleted.get_json(), {"ok": True, "deleted": 1})
+        history = self.client.get("/api/history").get_json()
+        self.assertEqual([site["gateway_id"] for site in history["gateways"]], [second_id])
+        self.assertEqual([run["gateway_id"] for run in history["runs"]], [second_id])
+        self.assertEqual([run["gateway_id"] for run in self.db.job(job_id)["runs"]], [second_id])
+        self.assertEqual(len(self.client.get("/api/gateways").get_json()["gateways"]), 2)
+
+        missing = self.client.delete(
+            f"/api/history/gateways/{first_id}", json={"confirm": True}
+        )
+        self.assertEqual((missing.status_code, missing.get_json()["error"]["code"]), (404, "HISTORY_NOT_FOUND"))
 
     def test_job_conflict_and_confirmed_history_clear(self):
         site_id = self.add_site()
