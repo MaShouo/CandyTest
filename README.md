@@ -4,7 +4,7 @@
 
 ## Docker 部署
 
-服务器只拉取 GHCR 镜像，不在本地构建。需要 Docker 与 Docker Compose v2。
+服务器只拉取 GHCR 镜像，不在本地构建。需要 Docker 与 Docker Compose v2。应用端口不会绑定公网地址：公网访问必须经过 Nginx Proxy Manager、Caddy 或宿主机上的其他 HTTPS 反向代理；宿主机直连仅开放 `127.0.0.1`。
 
 ```bash
 git clone https://github.com/MaShouo/CandyTest.git
@@ -53,7 +53,7 @@ NPM 有多个网络时，明确指定一个：
 ./deploy.sh --mode host
 ```
 
-默认监听 `[IP]:8765`，可在 `.env` 修改 `CANDYTEST_BIND_ADDRESS` 和 `CANDYTEST_PORT`。
+固定监听 `127.0.0.1:8765`；可在 `.env` 修改 `CANDYTEST_PORT`。反向代理上游填写 `http://127.0.0.1:8765`。不支持把应用端口直接绑定公网地址。
 
 没有反向代理时，可让 Caddy 自动配置 HTTPS：
 

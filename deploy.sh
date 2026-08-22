@@ -70,11 +70,13 @@ Usage:
   ./deploy.sh --help
 
 On a first deployment, the default auto mode uses the one usable network of a
-running Nginx Proxy Manager container, or falls back to host mode. On updates,
-the last successful host/npm/caddy mode is retained unless --mode is explicit.
-Use --mode caddy --domain example.com to let the bundled Caddy layer obtain and
-renew HTTPS certificates. --image is a complete image reference; --tag expands
-to ghcr.io/mashouo/candytest:TAG.
+running Nginx Proxy Manager container, or falls back to loopback-only host mode
+for an existing host reverse proxy. On updates, the last successful
+host/npm/caddy mode is retained unless --mode is explicit. CandyTest never
+publishes its application port on a public host address. Use --mode caddy
+--domain example.com to let the bundled Caddy layer obtain and renew HTTPS
+certificates. --image is a complete image reference; --tag expands to
+ghcr.io/mashouo/candytest:TAG.
 EOF
 }
 
@@ -533,7 +535,7 @@ capture_existing_deployment() {
 }
 
 print_connection_details() {
-    local mode=$1 network domain bind_address port
+    local mode=$1 network domain port
     case "$mode" in
         npm)
             network=$(value_or_default NPM_NETWORK "")
@@ -547,13 +549,12 @@ Nginx Proxy Manager settings
 EOF
             ;;
         host)
-            bind_address=$(value_or_default CANDYTEST_BIND_ADDRESS [IP])
             port=$(value_or_default CANDYTEST_PORT 8765)
             cat <<EOF
 
-Host mode is active.
-  Upstream: http://$bind_address:$port
-Use this upstream from an HTTPS reverse proxy running on the host.
+Host mode is active (loopback only).
+  Local address / reverse-proxy upstream: http://127.0.0.1:$port
+External access requires an HTTPS reverse proxy running on the host.
 EOF
             ;;
         caddy)
@@ -618,7 +619,7 @@ resolve_deploy_settings() {
                     detect_npm_networks
                     if [[ ${#NPM_CANDIDATE_IDS[@]} -eq 0 ]]; then
                         selected_mode=host
-                        info "No running Nginx Proxy Manager container was detected; using host mode." >&2
+                        info "No running Nginx Proxy Manager container was detected; using loopback-only host mode for a host reverse proxy." >&2
                     elif [[ ${#DETECTED_NPM_NETWORKS[@]} -eq 1 ]]; then
                         selected_mode=npm
                         NPM_NETWORK_OPTION=${DETECTED_NPM_NETWORKS[0]}

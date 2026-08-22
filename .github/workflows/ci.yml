@@ -50,7 +50,6 @@ jobs:
           CANDYTEST_IMAGE=candytest:ci
           CANDYTEST_MODE=host
           CANDYTEST_PORT=18765
-          CANDYTEST_BIND_ADDRESS=127.0.0.1
           CANDYTEST_MEMORY_LIMIT=2g
           COOKIE_SECURE=0
           EOF

@@ -38,6 +38,7 @@ def gateway(gateway_id: int = 1, name: str = "站点 A") -> dict:
         "base_url": "https://gateway.example/v1",
         "api_key": SECRET,
         "model": "test-model",
+        "multiplier": 1,
         "enabled": 1,
     }
 
@@ -205,7 +206,13 @@ class CliParsingAndIsolationTests(unittest.TestCase):
         self.assertNotIn(PROXY, " ".join(captures[0][0]))
         self.assertNotIn("HTTP_PROXY", captures[1][2])
         self.assertNotIn("HTTPS_PROXY", captures[1][2])
-        pi_model = json.loads(captures[0][1])["providers"]["candytest"]["models"][0]
+        pi_provider = json.loads(captures[0][1])["providers"]["candytest"]
+        self.assertEqual(pi_provider["headers"], {"User-Agent": cli.PI_USER_AGENT})
+        self.assertEqual(
+            cli.PI_USER_AGENT,
+            "codex-tui/0.149.0 (Windows 10.0.26200; x86_64) WindowsTerminal (codex-tui; 0.149.0)",
+        )
+        pi_model = pi_provider["models"][0]
         self.assertTrue(pi_model["reasoning"])
         self.assertEqual(pi_model["thinkingLevelMap"]["xhigh"], "xhigh")
         self.assertIn("override-model", captures[1][0])  # Codex --model argument
@@ -283,6 +290,9 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn("删除记录", source)
         self.assertIn("/api/history/gateways/", source)
         self.assertIn("中转站配置不会删除", source)
+        self.assertIn("是否同时删除", source)
+        self.assertIn("delete_history=", source)
+        self.assertIn("deleted_runs", source)
         self.assertIn("所选中转站暂无测试记录", source)
         self.assertIn("today_accuracy", source)
         self.assertIn("今日正确率", source)
@@ -294,12 +304,30 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn("d.open = opened.has(key)", source)
         self.assertIn('input[type=checkbox]:checked', source)
         self.assertIn("checkbox.checked = gateway.enabled && selected.has(gateway.id)", source)
+        self.assertIn('gateway.api_key_saved ? (gateway.api_key_masked || "••••••••") : "未保存"', source)
+        self.assertNotIn('已保存 ${gateway.api_key_masked', source)
+        self.assertIn("drag-handle", source)
+        self.assertIn("ondragstart", source)
+        self.assertIn("ondrop", source)
+        self.assertIn('["ArrowUp", "ArrowDown"]', source)
+        self.assertIn("/api/gateways/reorder", source)
+        self.assertIn("ondblclick", source)
+        self.assertIn("editGatewayCell", source)
+        self.assertIn('nameCell.dataset.field = "name"', source)
+        self.assertIn('multiplierCell.dataset.field = "multiplier"', source)
+        self.assertIn("inline-editor", source)
+        self.assertIn('api_key: ""', source)
+
+        self.assertIn("multiplier: Number(f.multiplier.value)", source)
         self.assertIn('previous = select.value || "low"', source)
         self.assertIn('e.code !== "WEBDAV_CONFLICT"', source)
         self.assertIn("Pull 不会备份", source)
         template = (Path(__file__).parents[1] / "candytest/templates/index.html").read_text(encoding="utf-8")
         self.assertIn('id="selectAllGateways"', template)
         self.assertIn("正确/总次数", template)
+        self.assertIn("<th>倍率</th>", template)
+        self.assertIn('name="multiplier"', template)
+        self.assertIn('aria-label="排序"', template)
         self.assertIn("历史正确率</th><th>今日正确率", template)
         self.assertIn('href="{{ url_for(\'settings\') }}"', template)
         self.assertIn('id="pushWebdav"', template)
@@ -320,6 +348,10 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn(".stat-selectable.selected", style)
         self.assertIn(".stat-selectable.not-selected", style)
         self.assertIn(".stat-actions", style)
+        self.assertIn(".drag-handle", style)
+        self.assertIn(".gateway-row.drag-over", style)
+        self.assertIn(".inline-editable", style)
+        self.assertIn(".inline-editor", style)
         self.assertNotIn('innerHTML', source)
         self.assertIn('syncGatewaySelectAll', source)
         self.assertIn('input[type=checkbox]:not(:disabled)', source)
@@ -351,8 +383,100 @@ class StorageTests(unittest.TestCase):
     def create_site(self, name: str = "站点 A") -> dict:
         return self.db.create_gateway({
             "name": name, "base_url": "https://example.test/v1/", "api_key": SECRET,
-            "model": "model-a", "enabled": 1,
+            "model": "model-a", "multiplier": 1, "enabled": 1,
         })
+
+    def test_gateway_migration_adds_default_multiplier_and_sort_order(self):
+        legacy_dir = Path(self.temp.name) / "legacy"
+        legacy_dir.mkdir()
+        legacy_path = legacy_dir / "candytest.sqlite3"
+        conn = sqlite3.connect(legacy_path)
+        try:
+            conn.executescript("""
+                CREATE TABLE gateways (
+                    id INTEGER PRIMARY KEY, name TEXT NOT NULL, base_url TEXT NOT NULL,
+                    api_key TEXT NOT NULL, model TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+                    deleted_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
+                CREATE TABLE test_jobs (status TEXT NOT NULL, completed_at TEXT, error TEXT);
+                CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
+                PRAGMA user_version = 2;
+            """)
+            conn.executemany(
+                "INSERT INTO gateways (id,name,base_url,api_key,model,created_at,updated_at) VALUES (?,?,?,?,?,?,?)",
+                ((7, "后建", "https://seven.test/v1", SECRET, "model", utcnow(), utcnow()),
+                 (2, "先显示", "https://two.test/v1", SECRET, "model", utcnow(), utcnow())),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        migrated = Database(legacy_dir)
+        with migrated.connect() as conn:
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 3)
+            columns = {row["name"]: row for row in conn.execute("PRAGMA table_info(gateways)")}
+            self.assertEqual(columns["multiplier"]["dflt_value"], "1")
+            self.assertEqual(columns["sort_order"]["dflt_value"], "0")
+        self.assertEqual([site["id"] for site in migrated.gateways()], [2, 7])
+        self.assertEqual([site["multiplier"] for site in migrated.gateways()], [1.0, 1.0])
+        created = migrated.create_gateway({
+            "name": "末尾", "base_url": "https://last.test/v1", "api_key": SECRET,
+            "model": "model", "multiplier": 1, "enabled": 1,
+        })
+        self.assertEqual([site["id"] for site in migrated.gateways()], [2, 7, created["id"]])
+
+    def test_partial_v3_gateway_migration_recovers(self):
+        partial_dir = Path(self.temp.name) / "partial"
+        partial_dir.mkdir()
+        conn = sqlite3.connect(partial_dir / "candytest.sqlite3")
+        try:
+            conn.executescript("""
+                CREATE TABLE gateways (
+                    id INTEGER PRIMARY KEY, name TEXT NOT NULL, base_url TEXT NOT NULL,
+                    api_key TEXT NOT NULL, model TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+                    deleted_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    multiplier REAL NOT NULL DEFAULT 1
+                );
+                CREATE TABLE test_jobs (status TEXT NOT NULL, completed_at TEXT, error TEXT);
+                CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
+                PRAGMA user_version = 2;
+            """)
+            conn.commit()
+        finally:
+            conn.close()
+
+        recovered = Database(partial_dir)
+        with recovered.connect() as conn:
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 3)
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(gateways)")}
+        self.assertIn("multiplier", columns)
+        self.assertIn("sort_order", columns)
+
+    def test_new_gateway_is_inserted_by_name_initial(self):
+        alpha = self.create_site("Alpha")
+        charlie = self.create_site("Charlie")
+        bravo = self.create_site("bravo")
+        self.assertEqual(
+            [site["id"] for site in self.db.gateways()],
+            [alpha["id"], bravo["id"], charlie["id"]],
+        )
+
+        self.assertTrue(self.db.reorder_gateways([charlie["id"], alpha["id"], bravo["id"]]))
+        beta = self.create_site("Beta 2")
+        ordered = [site["id"] for site in self.db.gateways()]
+        self.assertEqual(ordered, [beta["id"], charlie["id"], alpha["id"], bravo["id"]])
+        self.assertEqual([item for item in ordered if item != beta["id"]], [charlie["id"], alpha["id"], bravo["id"]])
+
+    def test_gateway_reorder_persists_and_rejects_partial_lists(self):
+        first = self.create_site("A一")
+        second = self.create_site("A二")
+        third = self.create_site("A三")
+        self.assertEqual([site["id"] for site in self.db.gateways()], [first["id"], second["id"], third["id"]])
+        ordered = [third["id"], first["id"], second["id"]]
+        self.assertTrue(self.db.reorder_gateways(ordered))
+        self.assertEqual([site["id"] for site in self.db.gateways()], ordered)
+        self.assertFalse(self.db.reorder_gateways(ordered[:-1]))
+        self.assertEqual([site["id"] for site in Database(Path(self.temp.name)).gateways()], ordered)
 
     def test_proxy_settings_default_and_persistence(self):
         self.assertEqual(self.db.proxy_settings(), {"enabled": False, "url": ""})
@@ -371,11 +495,11 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(site["api_key_masked"], "••••••••")
         saved = self.db.update_gateway(site["id"], {
             "name": "重命名", "base_url": "https://changed.test/v1", "api_key": None,
-            "model": "model-b", "enabled": 1,
+            "model": "model-b", "multiplier": 1, "enabled": 1,
         })
         self.assertEqual(saved["name"], "重命名")
         self.assertEqual(self.db.gateway_records([site["id"]])[0]["api_key"], SECRET)
-        self.assertTrue(self.db.delete_gateway(site["id"]))
+        self.assertEqual(self.db.delete_gateway(site["id"]), (True, 0))
         self.assertEqual(self.db.gateways(), [])
         self.assertEqual(self.db.gateway_records([site["id"]]), [])
 
@@ -489,7 +613,7 @@ class StorageTests(unittest.TestCase):
         # Mutations after backup cannot change the single-file snapshot.
         self.db.update_gateway(site["id"], {
             "name": "已修改", "base_url": "https://changed.example/v1", "api_key": "other-key",
-            "model": "other-model", "enabled": 1,
+            "model": "other-model", "multiplier": 1, "enabled": 1,
         })
         self.db.save_proxy_settings(False, "")
         conn = sqlite3.connect(snapshot)
@@ -512,7 +636,7 @@ class StorageTests(unittest.TestCase):
 
         self.db.update_gateway(site["id"], {
             "name": "本地更改", "base_url": "https://changed.example/v1", "api_key": "different-key",
-            "model": "different-model", "enabled": 0,
+            "model": "different-model", "multiplier": 1, "enabled": 0,
         })
         self.db.save_proxy_settings(False, "")
         self.db.clear_history()
@@ -538,7 +662,7 @@ class StorageTests(unittest.TestCase):
             self.db.restore_snapshot(invalid)
         self.assertEqual(self.db.gateway_records([site["id"]])[0]["api_key"], SECRET)
 
-        for version in (1, 3):
+        for version in (1, 2, 4):
             snapshot = Path(self.temp.name) / f"version-{version}.sqlite3"
             self.db.create_snapshot(snapshot)
             conn = sqlite3.connect(snapshot)
@@ -695,7 +819,7 @@ class ApiTests(unittest.TestCase):
         self.client = self.app.test_client()
         self.db = self.app.extensions["candytest_db"]
         self.site_body = {"name": "测试站", "base_url": "https://gateway.example/v1/", "api_key": SECRET,
-                          "model": "test-model", "enabled": True}
+                          "model": "test-model", "multiplier": 1, "enabled": True}
 
     def tearDown(self):
         self.temp.cleanup()
@@ -714,6 +838,32 @@ class ApiTests(unittest.TestCase):
         update = {**self.site_body, "name": "已编辑", "api_key": ""}
         self.assertEqual(self.client.put(f"/api/gateways/{site_id}", json=update).status_code, 200)
         self.assertEqual(self.db.gateway_records([site_id])[0]["api_key"], SECRET)
+
+    def test_gateway_multiplier_crud_default_and_validation(self):
+        body = {**self.site_body, "multiplier": 0.08}
+        created = self.client.post("/api/gateways", json=body)
+        self.assertEqual(created.status_code, 201)
+        site_id = created.get_json()["gateway"]["id"]
+        self.assertEqual(created.get_json()["gateway"]["multiplier"], 0.08)
+        updated = self.client.put(f"/api/gateways/{site_id}", json={**body, "multiplier": 2})
+        self.assertEqual(updated.get_json()["gateway"]["multiplier"], 2)
+        defaulted = self.client.post("/api/gateways", json={key: value for key, value in self.site_body.items() if key != "multiplier"})
+        self.assertEqual(defaulted.get_json()["gateway"]["multiplier"], 1)
+        for value in (True, "1", -0.01, 1_000_000.01, float("inf"), float("nan")):
+            with self.subTest(value=value):
+                invalid = self.client.post("/api/gateways", json={**self.site_body, "multiplier": value})
+                self.assertEqual((invalid.status_code, invalid.get_json()["error"]["code"]), (400, "INVALID_GATEWAY"))
+
+    def test_gateway_reorder_api_persists_complete_order(self):
+        gateway_ids = [self.add_site(), self.add_site(), self.add_site()]
+        ordered = [gateway_ids[2], gateway_ids[0], gateway_ids[1]]
+        saved = self.client.put("/api/gateways/reorder", json={"gateway_ids": ordered})
+        self.assertEqual((saved.status_code, saved.get_json()), (200, {"gateway_ids": ordered}))
+        self.assertEqual([site["id"] for site in self.client.get("/api/gateways").get_json()["gateways"]], ordered)
+        self.assertEqual([site["id"] for site in Database(Path(self.temp.name)).gateways()], ordered)
+        invalid = self.client.put("/api/gateways/reorder", json={"gateway_ids": ordered[:-1]})
+        self.assertEqual((invalid.status_code, invalid.get_json()["error"]["code"]), (400, "INVALID_GATEWAYS"))
+        self.assertEqual([site["id"] for site in self.client.get("/api/gateways").get_json()["gateways"]], ordered)
 
     def test_api_validates_content_gateway_and_unavailable_cli(self):
         self.assertEqual(self.client.post("/api/gateways", data="{}").status_code, 415)
@@ -783,6 +933,38 @@ class ApiTests(unittest.TestCase):
             f"/api/history/gateways/{first_id}", json={"confirm": True}
         )
         self.assertEqual((missing.status_code, missing.get_json()["error"]["code"]), (404, "HISTORY_NOT_FOUND"))
+
+    def test_gateway_delete_can_keep_or_remove_corresponding_records(self):
+        kept_id = self.add_site()
+        removed = self.client.post(
+            "/api/gateways", json={**self.site_body, "name": "删除记录站"}
+        ).get_json()["gateway"]
+        job_id = self.db.create_job(job_payload())
+        self.db.set_job_status(job_id, "completed")
+        self.db.add_run(run_payload(job_id, gateway_id=kept_id, name="测试站"))
+        self.db.add_run(run_payload(job_id, gateway_id=removed["id"], name=removed["name"]))
+
+        kept = self.client.delete(f"/api/gateways/{kept_id}")
+        self.assertEqual(kept.get_json(), {"ok": True, "deleted_runs": 0})
+        self.assertEqual(
+            {run["gateway_id"] for run in self.client.get("/api/history").get_json()["runs"]},
+            {kept_id, removed["id"]},
+        )
+
+        deleted = self.client.delete(f"/api/gateways/{removed['id']}?delete_history=1")
+        self.assertEqual(deleted.get_json(), {"ok": True, "deleted_runs": 1})
+        self.assertEqual(
+            [run["gateway_id"] for run in self.client.get("/api/history").get_json()["runs"]],
+            [kept_id],
+        )
+
+        active_id = self.add_site()
+        active_job = self.db.create_job(job_payload())
+        self.db.set_job_status(active_job, "running")
+        self.db.add_run(run_payload(active_job, gateway_id=active_id, name="测试站"))
+        conflict = self.client.delete(f"/api/gateways/{active_id}?delete_history=1")
+        self.assertEqual((conflict.status_code, conflict.get_json()["error"]["code"]), (409, "JOB_CONFLICT"))
+        self.assertIn(active_id, [site["id"] for site in self.db.gateways()])
 
     def test_job_conflict_and_confirmed_history_clear(self):
         site_id = self.add_site()
@@ -1031,7 +1213,7 @@ class ServerAuthTests(unittest.TestCase):
             self.assertEqual((denied.status_code, denied.get_json()["error"]["code"]), (403, "CSRF_FAILED"))
             allowed = client.post("/api/gateways", json={
                 "name": "server", "base_url": "https://gateway.example/v1", "api_key": SECRET,
-                "model": "model", "enabled": True,
+                "model": "model", "multiplier": 1, "enabled": True,
             }, headers={"X-CSRF-Token": csrf})
             self.assertEqual(allowed.status_code, 201)
             logout_denied = client.post("/logout")

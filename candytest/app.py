@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import math
 import os
 import secrets
 import threading
@@ -77,7 +78,13 @@ def normalize_gateway(data: dict[str, Any], require_key: bool) -> dict[str, Any]
     enabled = data.get("enabled", True)
     if not isinstance(enabled, bool):
         raise ValueError("enabled 必须为布尔值")
-    return {"name": name, "base_url": base_url, "api_key": api_key, "model": model, "enabled": int(enabled)}
+    multiplier = data.get("multiplier", 1)
+    if (not isinstance(multiplier, (int, float)) or isinstance(multiplier, bool)
+            or (isinstance(multiplier, float) and not math.isfinite(multiplier))
+            or not 0 <= multiplier <= 1_000_000):
+        raise ValueError("multiplier 必须为 0 到 1000000 的有限数字")
+    return {"name": name, "base_url": base_url, "api_key": api_key, "model": model,
+            "multiplier": multiplier, "enabled": int(enabled)}
 
 
 def normalize_proxy(data: dict[str, Any]) -> dict[str, Any]:
@@ -573,14 +580,38 @@ def create_app(data_dir: Path | None = None) -> Flask:
         if not saved: return api_error("GATEWAY_NOT_FOUND", "中转站不存在或已删除", 404)
         return jsonify({"gateway": saved})
 
+    @app.put("/api/gateways/reorder")
+    def reorder_gateways():
+        conflict = sync_mutation_error()
+        if conflict:
+            return conflict
+        data, error = json_body()
+        if error:
+            return error
+        gateway_ids = data.get("gateway_ids")
+        if (not isinstance(gateway_ids, list)
+                or any(not isinstance(item, int) or isinstance(item, bool) for item in gateway_ids)
+                or len(set(gateway_ids)) != len(gateway_ids)):
+            return api_error("INVALID_GATEWAYS", "排序必须包含不重复的中转站 ID")
+        if not db.reorder_gateways(gateway_ids):
+            return api_error("INVALID_GATEWAYS", "排序必须包含全部未删除的中转站")
+        return jsonify({"gateway_ids": gateway_ids})
+
     @app.delete("/api/gateways/<int:gateway_id>")
     def delete_gateway(gateway_id: int):
         conflict = sync_mutation_error()
         if conflict:
             return conflict
-        if not db.delete_gateway(gateway_id):
+        raw_delete_history = request.args.get("delete_history", "0")
+        if raw_delete_history not in {"0", "1"}:
+            return api_error("INVALID_DELETE_HISTORY", "delete_history 必须为 0 或 1")
+        try:
+            changed, deleted_runs = db.delete_gateway(gateway_id, raw_delete_history == "1")
+        except RuntimeError as exc:
+            return api_error("JOB_CONFLICT", str(exc), 409)
+        if not changed:
             return api_error("GATEWAY_NOT_FOUND", "中转站不存在或已删除", 404)
-        return jsonify({"ok": True})
+        return jsonify({"ok": True, "deleted_runs": deleted_runs})
 
     @app.post("/api/jobs")
     def create_job():

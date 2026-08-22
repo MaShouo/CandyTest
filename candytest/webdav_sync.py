@@ -23,7 +23,7 @@ from urllib.parse import quote, urlsplit, urlunsplit
 import requests
 from requests.auth import AuthBase
 
-from .storage import CURRENT_SCHEMA_VERSION, Database
+from .storage import CURRENT_SCHEMA_VERSION, MIGRATABLE_SCHEMA_VERSIONS, Database
 
 MAX_TRANSFER_BYTES = 500 * 1024 * 1024
 SIDECAR_VERSION = 2
@@ -546,7 +546,9 @@ def validate_manifest(value: Any) -> dict[str, Any]:
         raise WebDAVValidationError("远端 manifest 快照大小无效")
     if not isinstance(value["sha256"], str) or not _SHA256_RE.fullmatch(value["sha256"]):
         raise WebDAVValidationError("远端 manifest SHA-256 无效")
-    if value["db_user_version"] != CURRENT_SCHEMA_VERSION:
+    db_version = value["db_user_version"]
+    if (not isinstance(db_version, int) or isinstance(db_version, bool)
+            or db_version not in MIGRATABLE_SCHEMA_VERSIONS | {CURRENT_SCHEMA_VERSION}):
         raise WebDAVValidationError("远端数据库版本不兼容")
     return dict(value)
 
@@ -785,7 +787,7 @@ class WebDAVSyncService:
                     if _sha256(snapshot) != manifest["sha256"]:
                         raise WebDAVValidationError("远端快照 SHA-256 不匹配")
                     try:
-                        self.db.validate_snapshot(snapshot)
+                        self.db.upgrade_snapshot(snapshot, manifest["db_user_version"])
                         self.db.restore_snapshot(snapshot)
                     except WebDAVSyncError:
                         raise

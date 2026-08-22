@@ -92,8 +92,9 @@ class DockerDeploymentPolicyTests(unittest.TestCase):
         ):
             self.assertIn(setting, self.compose)
 
-    def test_host_layer_only_adds_configurable_host_mapping(self):
-        self.assertIn('${CANDYTEST_BIND_ADDRESS:-127.0.0.1}:${CANDYTEST_PORT:-8765}:8765', self.host)
+    def test_host_layer_only_adds_loopback_mapping(self):
+        self.assertIn('127.0.0.1:${CANDYTEST_PORT:-8765}:8765', self.host)
+        self.assertNotIn("CANDYTEST_BIND_ADDRESS", self.host)
         self.assertNotIn("build:", self.host)
         self.assertNotIn("external:", self.host)
         self.assertNotIn("caddy", self.host.lower())
@@ -149,6 +150,8 @@ class DockerDeploymentPolicyTests(unittest.TestCase):
         self.assertIn("restore-staging", self.deploy)
         self.assertIn("restore-previous", self.deploy)
         self.assertIn("NPM mode requires a running Nginx Proxy Manager", self.deploy)
+        self.assertIn("loopback-only host mode", self.deploy)
+        self.assertNotIn("CANDYTEST_BIND_ADDRESS", self.deploy)
         self.assertIn('DATA_VOLUME="${PROJECT_NAME}_candytest-data"', self.deploy)
         self.assertIn("backup_data_from_named_volume", self.deploy)
         self.assertIn('bridge|host|none) fatal', self.deploy)
@@ -161,6 +164,7 @@ class DockerDeploymentPolicyTests(unittest.TestCase):
     def test_env_and_ignore_files_keep_state_and_secrets_private(self):
         self.assertIn("CANDYTEST_IMAGE=ghcr.io/mashouo/candytest:latest", self.env_example)
         self.assertIn("CANDYTEST_MODE=auto", self.env_example)
+        self.assertNotIn("CANDYTEST_BIND_ADDRESS", self.env_example)
         self.assertIn("COOKIE_SECURE=1", self.env_example)
         self.assertIn("admin / admin", self.env_example)
         for entry in (".env", ".deploy", "deploy.sh", "compose*.yaml"):
@@ -175,6 +179,7 @@ class DockerDeploymentPolicyTests(unittest.TestCase):
         self.assertIn("ubuntu-latest", self.ci)
         self.assertIn("windows-latest", self.ci)
         self.assertIn("CANDYTEST_IMAGE=candytest:ci", self.ci)
+        self.assertNotIn("CANDYTEST_BIND_ADDRESS", self.ci)
         self.assertIn("-f compose.yaml -f compose.host.yaml", self.ci)
         self.assertIn("-f compose.yaml -f compose.npm.yaml config --quiet", self.ci)
         self.assertIn("-f compose.yaml -f compose.caddy.yaml config --quiet", self.ci)
@@ -208,6 +213,9 @@ class DockerDeploymentPolicyTests(unittest.TestCase):
         self.assertIn("Forward Port: 8765", self.readme)
         self.assertIn("candytest:8765", self.readme)
         self.assertIn("同一个 Docker 网络", self.readme)
+        self.assertIn("固定监听 `127.0.0.1:8765`", self.readme)
+        self.assertIn("公网访问必须经过", self.readme)
+        self.assertNotIn("CANDYTEST_BIND_ADDRESS", self.readme)
         self.assertIn("./deploy.sh status", self.readme)
         self.assertIn("./deploy.sh logs", self.readme)
         self.assertIn("./deploy.sh restore", self.readme)
@@ -232,7 +240,7 @@ class DockerDeploymentPolicyTests(unittest.TestCase):
         self.assertEqual(set(service["volumes"]), {"candytest-data:/data"})
         self.assertNotIn("ports", service)
         self.assertNotIn("networks", base)
-        self.assertEqual(host["services"]["candytest"]["ports"], ["${CANDYTEST_BIND_ADDRESS:-127.0.0.1}:${CANDYTEST_PORT:-8765}:8765"])
+        self.assertEqual(host["services"]["candytest"]["ports"], ["127.0.0.1:${CANDYTEST_PORT:-8765}:8765"])
         self.assertTrue(npm["networks"]["npm"]["external"])
         self.assertEqual(set(npm["services"]["candytest"]["networks"]), {"npm"})
         self.assertIn("candytest", npm["services"]["candytest"]["networks"]["npm"]["aliases"])

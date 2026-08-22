@@ -16,6 +16,7 @@ from . import DEFAULT_TIMEOUT_SECONDS, PROMPT
 
 ANSWER_PATTERN = re.compile(r"(?<!\d)21(?!\d)")
 SECRET_ENV = "CANDYTEST_GATEWAY_API_KEY"
+PI_USER_AGENT = "codex-tui/0.149.0 (Windows 10.0.26200; x86_64) WindowsTerminal (codex-tui; 0.149.0)"
 
 
 class InvocationCancelled(RuntimeError):
@@ -248,6 +249,7 @@ def _pi_models_config(base_url: str, model: str) -> str:
     return json.dumps({"providers": {"candytest": {
         "api": "openai-responses", "baseUrl": base_url,
         "apiKey": f"${{{SECRET_ENV}}}",
+        "headers": {"User-Agent": PI_USER_AGENT},
         "models": [{
             "id": model, "name": model, "reasoning": True,
             "thinkingLevelMap": thinking_levels,

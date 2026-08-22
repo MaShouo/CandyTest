@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Any
 
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
+MIGRATABLE_SCHEMA_VERSIONS = frozenset({2})
 REQUIRED_SNAPSHOT_TABLES = frozenset({"gateways", "test_jobs", "test_runs", "app_settings"})
 
 _AUTH_OR_RATE_LIMIT = re.compile(r"(?<!\d)(?:401|429)(?!\d)")
@@ -113,8 +114,9 @@ class Database:
     def _sidecar_paths(path: Path) -> tuple[Path, Path]:
         return Path(f"{path}-wal"), Path(f"{path}-shm")
 
-    def validate_snapshot(self, snapshot_path: Path | str) -> None:
-        """Reject anything except a complete snapshot for this schema version."""
+    def validate_snapshot(self, snapshot_path: Path | str,
+                          accepted_versions: set[int] | frozenset[int] | None = None) -> int:
+        """Reject anything except a complete snapshot for an accepted schema version."""
         snapshot = Path(snapshot_path)
         try:
             info = snapshot.stat()
@@ -136,9 +138,11 @@ class Database:
                 if [row[0] for row in integrity_rows] != ["ok"]:
                     raise ValueError("数据库快照完整性校验失败")
                 version = conn.execute("PRAGMA user_version").fetchone()[0]
-                if version != CURRENT_SCHEMA_VERSION:
+                versions = accepted_versions or frozenset({CURRENT_SCHEMA_VERSION})
+                if version not in versions:
+                    expected = "/".join(str(item) for item in sorted(versions))
                     raise ValueError(
-                        f"数据库快照版本不兼容：需要 {CURRENT_SCHEMA_VERSION}，实际 {version}"
+                        f"数据库快照版本不兼容：需要 {expected}，实际 {version}"
                     )
                 table_rows = conn.execute(
                     "SELECT name FROM sqlite_master WHERE type = 'table'"
@@ -152,6 +156,41 @@ class Database:
             raise
         except sqlite3.Error as exc:
             raise ValueError("数据库快照无法以只读模式打开") from exc
+        return version
+
+    @staticmethod
+    def _migrate_gateways_v3(conn: sqlite3.Connection) -> None:
+        """Apply or resume schema v3 atomically."""
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(gateways)")}
+            if "multiplier" not in columns:
+                conn.execute("ALTER TABLE gateways ADD COLUMN multiplier REAL NOT NULL DEFAULT 1")
+            if "sort_order" not in columns:
+                conn.execute("ALTER TABLE gateways ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
+            conn.execute("PRAGMA user_version = 3")
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+
+    def upgrade_snapshot(self, snapshot_path: Path | str, expected_version: int) -> None:
+        """Validate and upgrade a downloaded legacy snapshot in place."""
+        snapshot = Path(snapshot_path)
+        versions = MIGRATABLE_SCHEMA_VERSIONS | {CURRENT_SCHEMA_VERSION}
+        version = self.validate_snapshot(snapshot, versions)
+        if version != expected_version:
+            raise ValueError("远端 manifest 与数据库快照版本不一致")
+        if version in MIGRATABLE_SCHEMA_VERSIONS:
+            conn = sqlite3.connect(snapshot, timeout=15, isolation_level=None)
+            try:
+                conn.execute("PRAGMA journal_mode = DELETE")
+                self._migrate_gateways_v3(conn)
+            finally:
+                conn.close()
+            self._fsync_file(snapshot)
+        self.validate_snapshot(snapshot)
 
     def create_snapshot(self, snapshot_path: Path | str) -> Path:
         """Create a durable single-file SQLite backup, including committed WAL data."""
@@ -286,7 +325,7 @@ class Database:
                 CREATE INDEX idx_runs_gateway ON test_runs(gateway_id, created_at);
                 PRAGMA user_version = 1;
                 """)
-            if version < CURRENT_SCHEMA_VERSION:
+            if version < 2:
                 conn.executescript("""
                 CREATE TABLE IF NOT EXISTS app_settings (
                     key TEXT PRIMARY KEY,
@@ -295,6 +334,9 @@ class Database:
                 );
                 PRAGMA user_version = 2;
                 """)
+            if version < 3:
+                self._migrate_gateways_v3(conn)
+
             # A subprocess cannot survive an application restart. Do not leave a
             # permanently "running" job blocking all future work.
             conn.execute("""UPDATE test_jobs SET status = 'failed', completed_at = ?,
@@ -306,7 +348,7 @@ class Database:
         key_saved = bool(row["api_key"])
         return {
             "id": row["id"], "name": row["name"], "base_url": row["base_url"],
-            "model": row["model"], "enabled": bool(row["enabled"]),
+            "model": row["model"], "multiplier": row["multiplier"], "enabled": bool(row["enabled"]),
             "api_key_saved": key_saved, "api_key_masked": "••••••••" if key_saved else None,
             "created_at": row["created_at"], "updated_at": row["updated_at"],
         }
@@ -340,7 +382,7 @@ class Database:
 
     def gateways(self) -> list[dict[str, Any]]:
         with self.connect() as conn:
-            rows = conn.execute("SELECT * FROM gateways WHERE deleted_at IS NULL ORDER BY id").fetchall()
+            rows = conn.execute("SELECT * FROM gateways WHERE deleted_at IS NULL ORDER BY sort_order, id").fetchall()
         return [self.public_gateway(row) for row in rows]
 
     def gateway_records(self, ids: list[int]) -> list[dict[str, Any]]:
@@ -357,12 +399,53 @@ class Database:
     def create_gateway(self, item: dict[str, Any]) -> dict[str, Any]:
         now = utcnow()
         with self.connect() as conn:
-            cur = conn.execute("""INSERT INTO gateways
-                (name,base_url,api_key,model,enabled,created_at,updated_at)
-                VALUES (:name,:base_url,:api_key,:model,:enabled,:created_at,:updated_at)""",
-                {**item, "created_at": now, "updated_at": now})
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                rows = conn.execute(
+                    "SELECT id,name FROM gateways WHERE deleted_at IS NULL ORDER BY sort_order,id"
+                ).fetchall()
+                initial = item["name"][0].casefold()
+                insert_at = next(
+                    (index for index, row in enumerate(rows) if row["name"][:1].casefold() > initial),
+                    len(rows),
+                )
+                conn.executemany(
+                    "UPDATE gateways SET sort_order=? WHERE id=?",
+                    ((index + (index >= insert_at), row["id"]) for index, row in enumerate(rows)),
+                )
+                cur = conn.execute("""INSERT INTO gateways
+                    (name,base_url,api_key,model,multiplier,enabled,sort_order,created_at,updated_at)
+                    VALUES (:name,:base_url,:api_key,:model,:multiplier,:enabled,:sort_order,
+                    :created_at,:updated_at)""",
+                    {**item, "multiplier": item.get("multiplier", 1), "sort_order": insert_at,
+                     "created_at": now, "updated_at": now})
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
             row = conn.execute("SELECT * FROM gateways WHERE id = ?", (cur.lastrowid,)).fetchone()
         return self.public_gateway(row)
+
+    def reorder_gateways(self, gateway_ids: list[int]) -> bool:
+        """Persist a complete gateway ordering, rejecting stale or partial lists."""
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                stored_ids = [row["id"] for row in conn.execute(
+                    "SELECT id FROM gateways WHERE deleted_at IS NULL"
+                ).fetchall()]
+                if len(gateway_ids) != len(stored_ids) or set(gateway_ids) != set(stored_ids):
+                    conn.execute("ROLLBACK")
+                    return False
+                conn.executemany(
+                    "UPDATE gateways SET sort_order=? WHERE id=? AND deleted_at IS NULL",
+                    enumerate(gateway_ids),
+                )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        return True
 
     def update_gateway(self, gateway_id: int, item: dict[str, Any]) -> dict[str, Any] | None:
         now = utcnow()
@@ -371,16 +454,35 @@ class Database:
             if not old:
                 return None
             key = item["api_key"] if item.get("api_key") else old["api_key"]
-            conn.execute("""UPDATE gateways SET name=?,base_url=?,api_key=?,model=?,enabled=?,updated_at=? WHERE id=?""",
-                         (item["name"], item["base_url"], key, item["model"], item["enabled"], now, gateway_id))
+            conn.execute("""UPDATE gateways SET name=?,base_url=?,api_key=?,model=?,multiplier=?,enabled=?,updated_at=? WHERE id=?""",
+                         (item["name"], item["base_url"], key, item["model"], item.get("multiplier", old["multiplier"]), item["enabled"], now, gateway_id))
             row = conn.execute("SELECT * FROM gateways WHERE id = ?", (gateway_id,)).fetchone()
         return self.public_gateway(row)
 
-    def delete_gateway(self, gateway_id: int) -> bool:
+    def delete_gateway(self, gateway_id: int, delete_history: bool = False) -> tuple[bool, int]:
+        now = utcnow()
         with self.connect() as conn:
-            changed = conn.execute("UPDATE gateways SET deleted_at=?, enabled=0, updated_at=? WHERE id=? AND deleted_at IS NULL",
-                                   (utcnow(), utcnow(), gateway_id)).rowcount
-        return bool(changed)
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                changed = conn.execute(
+                    "UPDATE gateways SET deleted_at=?, enabled=0, updated_at=? WHERE id=? AND deleted_at IS NULL",
+                    (now, now, gateway_id),
+                ).rowcount
+                deleted = 0
+                if changed and delete_history:
+                    if conn.execute(
+                        "SELECT 1 FROM test_jobs WHERE status IN ('queued','running','cancelling') LIMIT 1"
+                    ).fetchone():
+                        raise RuntimeError("测试任务运行时不能删除历史")
+                    deleted = conn.execute(
+                        "DELETE FROM test_runs WHERE gateway_id=?", (gateway_id,)
+                    ).rowcount
+                conn.execute("COMMIT")
+            except Exception:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
+                raise
+        return bool(changed), int(deleted)
 
     def create_job(self, payload: dict[str, Any]) -> int:
         with self.connect() as conn:

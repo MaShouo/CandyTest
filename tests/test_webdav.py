@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import importlib.util
 import json
 import os
 import requests
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -298,6 +300,49 @@ class WebDAVSyncTests(unittest.TestCase):
             self.assertEqual(proxy, {"proxy_enabled": "1", "proxy_url": "http://localhost:7890"})
             self.assertFalse((second_dir / "backups").exists())
 
+    def test_v2_remote_snapshot_is_migrated_and_can_be_replaced(self):
+        with WebDAVFixture() as fixture:
+            self.configure(fixture.url)
+            legacy_dir = self.root / "legacy"
+            legacy = Database(legacy_dir)
+            self.add_data(legacy, "旧版站点")
+            snapshot = self.root / "legacy-v2.sqlite3"
+            legacy.create_snapshot(snapshot)
+            conn = sqlite3.connect(snapshot)
+            try:
+                conn.execute("PRAGMA journal_mode = DELETE")
+                conn.execute("ALTER TABLE gateways DROP COLUMN multiplier")
+                conn.execute("ALTER TABLE gateways DROP COLUMN sort_order")
+                conn.execute("PRAGMA user_version = 2")
+                conn.commit()
+            finally:
+                conn.close()
+            payload = snapshot.read_bytes()
+            revision = "123e4567-e89b-42d3-a456-426614174001"
+            device_id = "123e4567-e89b-42d3-a456-426614174000"
+            root_path = "/dav/Candy Test"
+            fixture.server.state.directories.update({root_path, f"{root_path}/revisions", f"{root_path}/revisions/{revision}"})
+            fixture.server.state.files[f"{root_path}/revisions/{revision}/candytest.sqlite3"] = payload
+            fixture.server.state.files[f"{root_path}/manifest.json"] = json.dumps({
+                "format": "candytest-sqlite-mirror", "version": 1,
+                "revision": revision, "previous_revision": None,
+                "device_id": device_id, "created_at": "2026-01-01T00:00:00+00:00",
+                "sha256": hashlib.sha256(payload).hexdigest(), "size": len(payload),
+                "db_user_version": 2,
+            }).encode()
+
+            self.assertTrue(self.service.connection_status()["reachable"])
+            self.assertEqual(self.service.pull()["revision"], revision)
+            site = self.db.gateways()[0]
+            self.assertEqual((site["name"], site["multiplier"]), ("旧版站点", 1.0))
+            with self.db.connect() as conn:
+                self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 3)
+
+            pushed = self.service.push()
+            remote_manifest = json.loads(fixture.server.state.files[f"{root_path}/manifest.json"])
+            self.assertEqual(remote_manifest["db_user_version"], 3)
+            self.assertEqual(pushed["revision"], remote_manifest["revision"])
+
     def test_manifest_and_hash_tampering_are_rejected(self):
         with WebDAVFixture() as fixture:
             self.configure(fixture.url)
@@ -315,7 +360,7 @@ class WebDAVSyncTests(unittest.TestCase):
                 "format": "candytest-sqlite-mirror", "version": 1,
                 "revision": pushed["revision"], "previous_revision": None,
                 "device_id": pushed["device_id"], "created_at": pushed["created_at"],
-                "sha256": "0" * 64, "size": pushed["size"], "db_user_version": 2,
+                "sha256": "0" * 64, "size": pushed["size"], "db_user_version": 3,
             }).encode()
             with self.assertRaises(WebDAVValidationError):
                 self.service.pull()
@@ -360,6 +405,16 @@ class WebDAVSyncTests(unittest.TestCase):
             parse_manifest(b"{}")
         with self.assertRaises(WebDAVValidationError):
             parse_manifest(b"not-json")
+        manifest = {
+            "format": "candytest-sqlite-mirror", "version": 1,
+            "revision": "123e4567-e89b-42d3-a456-426614174001", "previous_revision": None,
+            "device_id": "123e4567-e89b-42d3-a456-426614174000",
+            "created_at": "2026-01-01T00:00:00+00:00", "sha256": "0" * 64,
+            "size": 100, "db_user_version": 3,
+        }
+        for invalid_version in ([2], 2.0, True, 4):
+            with self.subTest(db_user_version=invalid_version), self.assertRaises(WebDAVValidationError):
+                parse_manifest(json.dumps({**manifest, "db_user_version": invalid_version}).encode())
 
 
 @unittest.skipUnless(FLASK_AVAILABLE, "Flask is not installed; install requirements.txt to run WebDAV API tests")

@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   const $ = (s) => document.querySelector(s);
-  const state = { gateways: [], history: new Map(), runtime: null, webdav: null, syncBusy: false, editing: null, currentId: null, currentJob: null, currentJobId: null, selectedGatewayIds: new Set() };
+  const state = { gateways: [], history: new Map(), runtime: null, webdav: null, syncBusy: false, editing: null, inlineEditing: false, currentId: null, currentJob: null, currentJobId: null, selectedGatewayIds: new Set(), draggingGatewayId: null, reordering: false };
   const efforts = { pi: ["off", "minimal", "low", "medium", "high", "xhigh", "max"], codex: ["low", "medium", "high", "xhigh", "max", "ultra"] };
 
   function node(tag, text, className) { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (className) el.className = className; return el; }
@@ -47,15 +47,67 @@
   function setSyncBusy(busy) { state.syncBusy = busy; updateSyncControls(); }
   function renderGateways() {
     const tbody = $("#gatewayRows");
+    if (state.inlineEditing) return;
     const selected = new Set([...tbody.querySelectorAll("input[type=checkbox]:checked")].map(item => Number(item.value)));
     const rows = [];
     for (const gateway of state.gateways) {
-      const tr = document.createElement("tr"); const checkbox = document.createElement("input"); checkbox.type = "checkbox"; checkbox.value = gateway.id; checkbox.disabled = !gateway.enabled; checkbox.checked = gateway.enabled && selected.has(gateway.id); tr.append(node("td")); tr.firstChild.append(checkbox);
-      tr.append(node("td", gateway.name + (gateway.enabled ? "" : "（已停用）")), node("td", gateway.base_url + (gateway.base_url.startsWith("http://") ? " ⚠ 不安全 HTTP" : "")), node("td", gateway.model), node("td", gateway.api_key_saved ? `已保存 ${gateway.api_key_masked || "••••••••"}` : "未保存"));
-      const h = state.history.get(gateway.id); tr.append(node("td", `${h?.correct || 0} / ${h?.graded || 0}`)); const historyStat = node("td"); historyStat.append(accuracyBadge(h?.accuracy ?? null)); tr.append(historyStat); const todayStat = node("td"); todayStat.append(accuracyBadge(h?.today_accuracy ?? null)); tr.append(todayStat);
-      const actions = node("td"), group = node("div", undefined, "row-actions"); const edit = node("button", "编辑", "secondary"); edit.type = "button"; edit.onclick = () => showGateway(gateway); const remove = node("button", "删除", "secondary danger"); remove.type = "button"; remove.onclick = () => removeGateway(gateway); group.append(edit, remove); actions.append(group); tr.append(actions); rows.push(tr);
+      const tr = document.createElement("tr");
+      tr.className = "gateway-row";
+      tr.dataset.gatewayId = String(gateway.id);
+      const handle = node("span", "⠿", "drag-handle");
+      handle.draggable = true;
+      handle.tabIndex = 0;
+      handle.setAttribute("role", "button");
+      handle.title = "拖动排序；方向键上下移动";
+      handle.setAttribute("aria-label", `拖动${gateway.name}排序`);
+      const handleCell = node("td");
+      handleCell.append(handle);
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.value = gateway.id;
+      checkbox.disabled = !gateway.enabled;
+      checkbox.checked = gateway.enabled && selected.has(gateway.id);
+      const checkboxCell = node("td");
+      checkboxCell.append(checkbox);
+      const nameCell = node("td", gateway.name + (gateway.enabled ? "" : "（已停用）"), "inline-editable");
+      nameCell.dataset.field = "name";
+      const multiplierCell = node("td", `${gateway.multiplier}x`, "inline-editable");
+      multiplierCell.dataset.field = "multiplier";
+      for (const cell of [nameCell, multiplierCell]) {
+        cell.tabIndex = 0;
+        cell.title = "双击编辑；Enter 或 F2 也可编辑";
+        cell.setAttribute("role", "button");
+        cell.setAttribute("aria-label", `编辑${cell.dataset.field === "name" ? "中转站名称" : "倍率"}`);
+      }
+      tr.append(handleCell, checkboxCell, nameCell, multiplierCell);
+      tr.append(node("td", gateway.base_url + (gateway.base_url.startsWith("http://") ? " ⚠ 不安全 HTTP" : "")), node("td", gateway.model), node("td", gateway.api_key_saved ? (gateway.api_key_masked || "••••••••") : "未保存"));
+      const h = state.history.get(gateway.id);
+      tr.append(node("td", `${h?.correct || 0} / ${h?.graded || 0}`));
+      const historyStat = node("td");
+      historyStat.append(accuracyBadge(h?.accuracy ?? null));
+      tr.append(historyStat);
+      const todayStat = node("td");
+      todayStat.append(accuracyBadge(h?.today_accuracy ?? null));
+      tr.append(todayStat);
+      const actions = node("td"), group = node("div", undefined, "row-actions");
+      const edit = node("button", "编辑", "secondary");
+      edit.type = "button";
+      edit.onclick = () => showGateway(gateway);
+      const remove = node("button", "删除", "secondary danger");
+      remove.type = "button";
+      remove.onclick = () => removeGateway(gateway);
+      group.append(edit, remove);
+      actions.append(group);
+      tr.append(actions);
+      rows.push(tr);
     }
-    if (!state.gateways.length) { const tr = document.createElement("tr"), td = node("td", "尚未添加中转站", "empty"); td.colSpan = 9; tr.append(td); rows.length = 0; rows.push(tr); }
+    if (!state.gateways.length) {
+      const tr = document.createElement("tr"), td = node("td", "尚未添加中转站", "empty");
+      td.colSpan = 11;
+      tr.append(td);
+      rows.length = 0;
+      rows.push(tr);
+    }
     clear(tbody, rows);
     syncGatewaySelectAll();
   }
@@ -67,8 +119,89 @@
     selectAll.checked = enabled.length > 0 && checked === enabled.length;
     selectAll.indeterminate = checked > 0 && checked < enabled.length;
   }
-  function showGateway(gateway) { state.editing = gateway || null; const form = $("#gatewayForm"); form.reset(); $("#gatewayTitle").textContent = gateway ? `编辑：${gateway.name}` : "添加中转站"; if (gateway) { form.name.value = gateway.name; form.base_url.value = gateway.base_url; form.model.value = gateway.model; form.enabled.checked = gateway.enabled; } $("#gatewayPanel").hidden = false; form.name.focus(); }
-  async function removeGateway(gateway) { if (!confirm(`删除“${gateway.name}”？历史测试记录会保留。`)) return; try { await api(`/api/gateways/${gateway.id}`, { method: "DELETE" }); flash("中转站已删除。"); await loadGateways(); } catch (e) { flash(e.message, true); } }
+  async function saveGatewayOrder(draggedGatewayId, targetGatewayId, before, keepFocus = false) {
+    const previous = state.gateways;
+    const reordered = state.gateways.filter(gateway => gateway.id !== draggedGatewayId);
+    const targetIndex = reordered.findIndex(gateway => gateway.id === targetGatewayId);
+    if (targetIndex < 0) return;
+    reordered.splice(targetIndex + (before ? 0 : 1), 0, state.gateways.find(gateway => gateway.id === draggedGatewayId));
+    if (reordered.every((gateway, index) => gateway === state.gateways[index])) return;
+    state.gateways = reordered;
+    renderGateways();
+    if (keepFocus) document.querySelector(`#gatewayRows tr[data-gateway-id="${draggedGatewayId}"] .drag-handle`)?.focus();
+    state.reordering = true;
+    try {
+      await api("/api/gateways/reorder", { method: "PUT", body: JSON.stringify({ gateway_ids: reordered.map(gateway => gateway.id) }) });
+    } catch (e) {
+      try { await loadGateways(); } catch (_) { state.gateways = previous; renderGateways(); }
+      flash(e.message, true);
+    } finally {
+      state.reordering = false;
+      if (keepFocus) document.querySelector(`#gatewayRows tr[data-gateway-id="${draggedGatewayId}"] .drag-handle`)?.focus();
+    }
+  }
+  function clearGatewayDrag() { for (const row of document.querySelectorAll("#gatewayRows .gateway-row")) row.classList.remove("dragging", "drag-over"); }
+  function gatewayRow(event) { const row = event.target.closest("tr[data-gateway-id]"); return row && $("#gatewayRows").contains(row) ? row : null; }
+  function editGatewayCell(cell) {
+    if (state.inlineEditing || state.reordering) return;
+    const row = cell.closest("tr[data-gateway-id]");
+    const gateway = state.gateways.find(item => item.id === Number(row?.dataset.gatewayId));
+    const field = cell.dataset.field;
+    if (!gateway || !["name", "multiplier"].includes(field)) return;
+    const input = document.createElement("input");
+    input.className = "inline-editor";
+    input.required = true;
+    if (field === "name") { input.type = "text"; input.maxLength = 100; input.value = gateway.name; }
+    else { input.type = "number"; input.min = "0"; input.max = "1000000"; input.step = "any"; input.value = String(gateway.multiplier); }
+    state.inlineEditing = true;
+    clear(cell, [input]);
+    input.focus();
+    input.select();
+    let finished = false;
+    const finish = async (save) => {
+      if (finished) return;
+      if (!save) {
+        finished = true;
+        state.inlineEditing = false;
+        renderGateways();
+        return;
+      }
+      const value = field === "name" ? input.value.trim() : Number(input.value);
+      input.setCustomValidity(field === "name" && !value ? "名称不能为空" : "");
+      if (!input.checkValidity()) { input.reportValidity(); input.focus(); return; }
+      if (value === gateway[field]) { finished = true; state.inlineEditing = false; renderGateways(); return; }
+      finished = true;
+      input.disabled = true;
+      try {
+        const body = { name: field === "name" ? value : gateway.name, multiplier: field === "multiplier" ? value : gateway.multiplier, base_url: gateway.base_url, model: gateway.model, api_key: "", enabled: gateway.enabled };
+        const data = await api(`/api/gateways/${gateway.id}`, { method: "PUT", body: JSON.stringify(body) });
+        state.gateways = state.gateways.map(item => item.id === gateway.id ? data.gateway : item);
+        flash("中转站已更新。");
+      } catch (e) {
+        flash(e.message, true);
+      } finally {
+        state.inlineEditing = false;
+        renderGateways();
+        document.querySelector(`#gatewayRows tr[data-gateway-id="${gateway.id}"] [data-field="${field}"]`)?.focus();
+      }
+    };
+    input.onblur = () => { void finish(true); };
+    input.onkeydown = (event) => {
+      if (event.key === "Enter") { event.preventDefault(); void finish(true); }
+      else if (event.key === "Escape") { event.preventDefault(); void finish(false); }
+    };
+  }
+  function showGateway(gateway) { state.editing = gateway || null; const form = $("#gatewayForm"); form.reset(); $("#gatewayTitle").textContent = gateway ? `编辑：${gateway.name}` : "添加中转站"; if (gateway) { form.name.value = gateway.name; form.multiplier.value = gateway.multiplier; form.base_url.value = gateway.base_url; form.model.value = gateway.model; form.enabled.checked = gateway.enabled; } $("#gatewayPanel").hidden = false; form.name.focus(); }
+  async function removeGateway(gateway) {
+    if (!confirm(`删除“${gateway.name}”中转站？`)) return;
+    const deleteHistory = confirm(`是否同时删除“${gateway.name}”对应的测试记录？\n\n确定：删除记录；取消：保留记录。`);
+    try {
+      const result = await api(`/api/gateways/${gateway.id}?delete_history=${deleteHistory ? 1 : 0}`, { method: "DELETE" });
+      flash(deleteHistory ? `中转站及 ${result.deleted_runs} 条对应记录已删除。` : "中转站已删除，对应记录已保留。");
+      await loadGateways();
+      if (deleteHistory) { await loadHistory(); await refreshCurrent(); }
+    } catch (e) { flash(e.message, true); }
+  }
   async function removeGatewayHistory(site, button) {
     const name = site.gateway_name || site.name;
     const total = (site.graded || 0) + (site.errors || 0) + (site.cancelled || 0);
@@ -188,9 +321,43 @@
   $("#newGateway").onclick = () => showGateway(); $("#cancelGateway").onclick = () => { $("#gatewayPanel").hidden = true; };
   $("#selectAllGateways").onchange = (event) => { for (const checkbox of document.querySelectorAll("#gatewayRows input[type=checkbox]:not(:disabled)")) checkbox.checked = event.currentTarget.checked; syncGatewaySelectAll(); };
   $("#gatewayRows").onchange = (event) => { if (event.target.matches("input[type=checkbox]")) syncGatewaySelectAll(); };
+  $("#gatewayRows").ondblclick = (event) => { const cell = event.target.closest(".inline-editable"); if (cell) editGatewayCell(cell); };
+  $("#gatewayRows").onkeydown = (event) => {
+    if (event.target.matches(".inline-editable") && ["Enter", "F2"].includes(event.key)) { event.preventDefault(); editGatewayCell(event.target); return; }
+    if (!event.target.matches(".drag-handle") || !["ArrowUp", "ArrowDown"].includes(event.key) || state.reordering) return;
+    const row = gatewayRow(event), sibling = event.key === "ArrowUp" ? row?.previousElementSibling : row?.nextElementSibling;
+    if (!row || !sibling?.dataset.gatewayId) return;
+    event.preventDefault();
+    void saveGatewayOrder(Number(row.dataset.gatewayId), Number(sibling.dataset.gatewayId), event.key === "ArrowUp", true);
+  };
+  $("#gatewayRows").ondragstart = (event) => {
+    const row = gatewayRow(event);
+    if (!event.target.closest(".drag-handle") || !row || state.reordering) { event.preventDefault(); return; }
+    state.draggingGatewayId = Number(row.dataset.gatewayId);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", String(state.draggingGatewayId));
+    row.classList.add("dragging");
+  };
+  $("#gatewayRows").ondragover = (event) => {
+    const row = gatewayRow(event);
+    if (state.draggingGatewayId == null || !row || Number(row.dataset.gatewayId) === state.draggingGatewayId) return;
+    event.preventDefault();
+    clearGatewayDrag();
+    row.classList.add("drag-over");
+  };
+  $("#gatewayRows").ondragend = () => { state.draggingGatewayId = null; clearGatewayDrag(); };
+  $("#gatewayRows").ondrop = (event) => {
+    const row = gatewayRow(event), draggedGatewayId = state.draggingGatewayId;
+    if (draggedGatewayId == null || !row || Number(row.dataset.gatewayId) === draggedGatewayId) return;
+    event.preventDefault();
+    state.draggingGatewayId = null;
+    clearGatewayDrag();
+    const before = event.clientY < row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2;
+    void saveGatewayOrder(draggedGatewayId, Number(row.dataset.gatewayId), before);
+  };
   $("#pushWebdav").onclick = async () => { if (!confirm("Push 会用本机全部数据覆盖云端。继续吗？")) return; setSyncBusy(true); try { let data; try { data = await api("/api/webdav/push", { method: "POST", body: JSON.stringify({ force: false }) }); } catch (e) { if (e.code !== "WEBDAV_CONFLICT" || !confirm("远端已被其他设备更新。确定强制用本机数据覆盖云端吗？")) throw e; data = await api("/api/webdav/push", { method: "POST", body: JSON.stringify({ force: true }) }); } await loadWebdav(); flash(`Push 完成：revision ${shortRevision(data.result.revision)}${data.result.warnings?.length ? `；${data.result.warnings.join("；")}` : ""}`); } catch (e) { flash(e.message, true); } finally { setSyncBusy(false); } };
   $("#pullWebdav").onclick = async () => { if (!confirm("危险：Pull 不会备份，会用云端快照替换本机全部中转站、API Key、代理设置和历史。确定继续吗？")) return; setSyncBusy(true); try { const data = await api("/api/webdav/pull", { method: "POST", body: JSON.stringify({ confirm: true }) }); flash(`Pull 完成：revision ${shortRevision(data.result.revision)}，正在刷新页面…`); setTimeout(() => location.reload(), 300); } catch (e) { flash(e.message, true); setSyncBusy(false); } };
-  $("#gatewayForm").onsubmit = async (event) => { event.preventDefault(); const f = event.currentTarget; const body = { name: f.name.value, base_url: f.base_url.value, model: f.model.value, api_key: f.api_key.value, enabled: f.enabled.checked }; try { await api(state.editing ? `/api/gateways/${state.editing.id}` : "/api/gateways", { method: state.editing ? "PUT" : "POST", body: JSON.stringify(body) }); $("#gatewayPanel").hidden = true; flash("中转站已保存。"); await loadGateways(); } catch (e) { flash(e.message, true); } };
+  $("#gatewayForm").onsubmit = async (event) => { event.preventDefault(); const f = event.currentTarget; const body = { name: f.name.value, multiplier: Number(f.multiplier.value), base_url: f.base_url.value, model: f.model.value, api_key: f.api_key.value, enabled: f.enabled.checked }; try { await api(state.editing ? `/api/gateways/${state.editing.id}` : "/api/gateways", { method: state.editing ? "PUT" : "POST", body: JSON.stringify(body) }); $("#gatewayPanel").hidden = true; flash("中转站已更新。"); await loadGateways(); } catch (e) { flash(e.message, true); } };
   $("#engine").onchange = setEfforts;
   $("#jobForm").onsubmit = async (event) => { event.preventDefault(); const f = event.currentTarget, gateway_ids = [...document.querySelectorAll("#gatewayRows input[type=checkbox]:checked")].map(x => Number(x.value)); const body = { engine: f.engine.value, rounds: Number(f.rounds.value), reasoning_effort: f.reasoning_effort.value, model_override: f.model_override.value, mode: f.mode.value, gateway_ids }; try { const result = await api("/api/jobs", { method: "POST", body: JSON.stringify(body) }); flash(`任务 #${result.job_id} 已启动。`); await refreshCurrent(); } catch (e) { flash(e.message, true); } };
   $("#stopJob").onclick = async () => { if (!state.currentId || !confirm("确定中断当前测试？已完成的轮次会保留，正在调用的 CLI 进程将被终止。")) return; const button = $("#stopJob"); button.disabled = true; button.textContent = "正在中断…"; try { await api(`/api/jobs/${state.currentId}/cancel`, { method: "POST" }); flash("已发送中断请求，正在终止 CLI 调用…"); await refreshCurrent(); } catch (e) { flash(e.message, true); button.disabled = false; button.textContent = "中断测试"; } };
