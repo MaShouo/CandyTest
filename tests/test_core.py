@@ -21,7 +21,10 @@ from itertools import product
 from pathlib import Path
 from unittest.mock import patch
 
-from candytest import CUP_PROMPT, PROMPT_TEMPLATES, candy_prompt, question_prompt, random_candy_prompt
+from candytest import (
+    CUP_PROMPT, DAG_PROMPT, PROBABILITY_PROMPT, PROMPT_TEMPLATES,
+    candy_prompt, question_prompt, random_candy_prompt,
+)
 from candytest import cli
 from candytest.jobs import JobManager
 from candytest.cli import InvocationCancelled
@@ -100,6 +103,10 @@ class CliParsingAndIsolationTests(unittest.TestCase):
         self.assertEqual((prompt, expected), (CUP_PROMPT, 8))
         self.assertIn("只能是相邻，不能是任意两个", prompt)
         self.assertIn("为什么 x 可行，为什么小于 x 不可行", prompt)
+        self.assertEqual(question_prompt("probability"), (PROBABILITY_PROMPT, "319/1728"))
+        self.assertEqual(question_prompt("dag10"), (DAG_PROMPT, "666"))
+        self.assertIn("A 优先", PROBABILITY_PROMPT)
+        self.assertIn("G、H 都在 I 前", DAG_PROMPT)
         with self.assertRaisesRegex(ValueError, "不支持的题目"):
             question_prompt("missing")
 
@@ -138,6 +145,18 @@ class CliParsingAndIsolationTests(unittest.TestCase):
         self.assertFalse(cli.answer_is_correct("121", 21))
         self.assertFalse(cli.answer_is_correct("210", 21))
         self.assertFalse(cli.answer_is_correct("", 21))
+
+    def test_new_questions_grade_only_normalized_final_line(self):
+        self.assertFalse(cli.answer_is_correct("中间猜测 666，但最终是 700", "666"))
+        self.assertFalse(cli.answer_is_correct("FINAL: 666\n更正：700", "666"))
+        self.assertFalse(cli.answer_is_correct("666", "666"))
+        self.assertTrue(cli.answer_is_correct("证明完成\nFINAL: 666", "666"))
+        self.assertTrue(cli.answer_is_correct(
+            "证明完成\nFINAL: \\(\\frac{319}{1728}\\)", "319/1728",
+        ))
+        self.assertFalse(cli.answer_is_correct(
+            "中间出现 319/1728\nFINAL: 2209/11664", "319/1728",
+        ))
 
     def test_parse_pi_jsonl_ignores_noise_and_uses_assistant_usage(self):
         stdout = "\n".join((
@@ -393,6 +412,8 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn("multiplier: Number(f.multiplier.value)", source)
         self.assertIn('previous = preferred || select.value || "low"', source)
         self.assertIn('cup: { rounds: 2, effort: "medium" }', source)
+        self.assertIn('probability: { rounds: 5, effort: "medium" }', source)
+        self.assertIn('dag10: { rounds: 5, effort: "medium" }', source)
         self.assertIn('question_id: f.question_id.value', source)
         self.assertIn('$("#question").onchange = setQuestionDefaults', source)
         self.assertIn('e.code !== "WEBDAV_CONFLICT"', source)
@@ -401,6 +422,8 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn('id="question"', template)
         self.assertIn('<option value="candy">糖果题</option>', template)
         self.assertIn('<option value="cup">水杯题</option>', template)
+        self.assertIn('<option value="probability">骰子概率题</option>', template)
+        self.assertIn('<option value="dag10">任务排序题</option>', template)
         self.assertIn('id="rounds"', template)
         self.assertIn('id="selectAllGateways"', template)
         self.assertIn("正确/总次数", template)
@@ -858,6 +881,22 @@ class SchedulingTests(unittest.TestCase):
         self.assertEqual(prompts, [CUP_PROMPT] * 4)
         self.assertEqual(self.db.job(job_id)["summary"]["correct"], 4)
 
+    def test_new_question_runs_with_four_minute_timeout(self):
+        timeouts: list[int] = []
+
+        def fake_invoke(_engine, _site, _model, _effort, timeout, _cancel_event, _proxy_url, _prompt):
+            timeouts.append(timeout)
+            return {"answer": "FINAL: 666", "elapsed_seconds": 0.0}
+
+        job_id = self.make_job("serial", 1)
+        with patch("candytest.jobs.invoke", side_effect=fake_invoke):
+            self.manager._run_job(
+                job_id, "pi", "serial", 1, "medium", None, self.sites,
+                question_id="dag10",
+            )
+        self.assertEqual(timeouts, [240, 240])
+        self.assertEqual(self.db.job(job_id)["summary"]["correct"], 2)
+
     def test_parallel_mode_overlaps_sites_but_never_rounds_of_one_site(self):
         lock = threading.Lock()
         active_by_site = {"A": 0, "B": 0}
@@ -1012,12 +1051,26 @@ class ApiTests(unittest.TestCase):
             response = self.client.post(
                 "/api/jobs", json={"engine": "pi", "question_id": "cup", "gateway_ids": [site_id]},
             )
+            probability = self.client.post(
+                "/api/jobs", json={"engine": "pi", "question_id": "probability", "gateway_ids": [site_id]},
+            )
+            dag = self.client.post(
+                "/api/jobs", json={"engine": "pi", "question_id": "dag10", "gateway_ids": [site_id]},
+            )
             invalid = self.client.post(
                 "/api/jobs", json={"engine": "pi", "question_id": "missing", "gateway_ids": [site_id]},
             )
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(start.call_args.args[1:4], ("parallel", 2, "medium"))
-        self.assertEqual(start.call_args.args[-1], "cup")
+        self.assertEqual(probability.status_code, 201)
+        self.assertEqual(dag.status_code, 201)
+        self.assertEqual(
+            [call.args[1:4] + (call.args[-1],) for call in start.call_args_list],
+            [
+                ("parallel", 2, "medium", "cup"),
+                ("parallel", 5, "medium", "probability"),
+                ("parallel", 5, "medium", "dag10"),
+            ],
+        )
         self.assertEqual((invalid.status_code, invalid.get_json()["error"]["code"]), (400, "INVALID_QUESTION"))
 
     def test_proxy_api_validates_and_passes_snapshot_to_new_job(self):

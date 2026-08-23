@@ -18,7 +18,23 @@ SECRET_ENV = "CANDYTEST_GATEWAY_API_KEY"
 PI_USER_AGENT = "codex-tui/0.149.0 (Windows 10.0.26200; x86_64) WindowsTerminal (codex-tui; 0.149.0)"
 
 
-def answer_is_correct(answer: str, expected: int) -> bool:
+def _final_answer(answer: str) -> str | None:
+    lines = [line.strip() for line in answer.splitlines() if line.strip()]
+    if not lines:
+        return None
+    match = re.fullmatch(r"(?i)FINAL\s*:\s*(.+?)", lines[-1])
+    if not match:
+        return None
+    value = match.group(1).strip().strip("`*_。.")
+    fraction = re.fullmatch(
+        r"(?:\\\(\s*)?\\frac\{(\d+)\}\{(\d+)\}(?:\s*\\\))?", value,
+    )
+    return f"{fraction.group(1)}/{fraction.group(2)}" if fraction else value
+
+
+def answer_is_correct(answer: str, expected: int | str) -> bool:
+    if isinstance(expected, str):
+        return _final_answer(answer) == expected
     return re.search(rf"(?<!\d){expected}(?!\d)", answer) is not None
 
 

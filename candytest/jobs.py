@@ -9,6 +9,8 @@ from . import DEFAULT_TIMEOUT_SECONDS, question_prompt
 from .cli import InvocationCancelled, answer_is_correct, invoke
 from .storage import Database, utcnow
 
+QUESTION_TIMEOUTS = {"probability": 240, "dag10": 240}
+
 
 class JobManager:
     """One process-local scheduler: sites may overlap, rounds within a site may not."""
@@ -84,12 +86,14 @@ class JobManager:
         final_error: str | None = None
         try:
             questions = [question_prompt(question_id) for _ in range(rounds)]
+            timeout = QUESTION_TIMEOUTS.get(question_id, DEFAULT_TIMEOUT_SECONDS)
             if mode == "parallel":
                 with ThreadPoolExecutor(max_workers=len(gateways), thread_name_prefix="candytest") as pool:
                     futures = [
                         pool.submit(
                             self._run_gateway, job_id, engine, effort,
                             model_override, gateway, questions, cancel_event, proxy_url,
+                            timeout,
                         )
                         for gateway in gateways
                     ]
@@ -101,7 +105,7 @@ class JobManager:
                         break
                     self._run_gateway(
                         job_id, engine, effort, model_override, gateway, questions,
-                        cancel_event, proxy_url,
+                        cancel_event, proxy_url, timeout,
                     )
             if cancel_event.is_set():
                 final_status = "cancelled"
@@ -120,9 +124,10 @@ class JobManager:
 
     def _run_gateway(self, job_id: int, engine: str, effort: str,
                      model_override: str | None, gateway: dict[str, Any],
-                     questions: list[tuple[str, int]],
+                     questions: list[tuple[str, int | str]],
                      cancel_event: threading.Event | None = None,
-                     proxy_url: str | None = None) -> None:
+                     proxy_url: str | None = None,
+                     timeout: int = DEFAULT_TIMEOUT_SECONDS) -> None:
         cancel_event = cancel_event or threading.Event()
         # Deliberately sequential: providers commonly rate-limit one API key/model.
         for number, (prompt, expected) in enumerate(questions, 1):
@@ -131,7 +136,7 @@ class JobManager:
             try:
                 result = invoke(
                     engine, gateway, model_override or gateway["model"], effort,
-                    DEFAULT_TIMEOUT_SECONDS, cancel_event, proxy_url, prompt,
+                    timeout, cancel_event, proxy_url, prompt,
                 )
                 answer = result.get("answer", "")
                 run = {

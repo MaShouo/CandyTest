@@ -56,7 +56,22 @@ CUP_PROMPT = """有一个水杯配对游戏。共有 4 种不同颜色的水杯�
 回答时请不要进行联网搜索，也不要写代码来辅助计算(包括思考过程中)。
 假设答案是 x ，你需要给出严格的证明，为什么 x 可行，为什么小于 x 不可行。
 """
-QUESTION_NAMES = {"candy": "糖果题", "cup": "水杯题"}
+PROBABILITY_PROMPT = """独立重复掷一枚公平六面骰，记录累计点数与上一次点数。出现以下任一情况立即停止：A. 当前累计点数达到或超过 10；B. 本次点数与紧邻的上一次点数相同。若某次投掷同时触发 A、B，规定 A 优先，视为 A 停止。
+求最终因 B 停止的概率，答案写成最简分数。请建立有限状态递推并展示足够中间值，使结果可以人工复核。不得联网、调用工具或编写/运行代码。
+最后一行必须严格写成 FINAL: <最简分数>。
+"""
+DAG_PROMPT = """十个不同任务 A,B,C,D,E,F,G,H,I,J 的先后约束为：A 在 D、E 前；B 在 E、F 前；C 在 F 前；D 在 G、J 前；E 在 G、H 前；F 在 H、J 前；G、H 都在 I 前。除此之外没有约束。
+问共有多少种包含全部十个任务的合法线性执行顺序？请给出可人工复核的分层计数、子集递推或分类证明。不得联网、调用工具或编写/运行代码。
+最后一行必须严格写成 FINAL: <整数>。
+"""
+QUESTION_NAMES = {
+    "candy": "糖果题", "cup": "水杯题",
+    "probability": "骰子概率题", "dag10": "任务排序题",
+}
+QUESTION_DEFAULTS = {
+    "candy": (5, "low"), "cup": (2, "medium"),
+    "probability": (5, "medium"), "dag10": (5, "medium"),
+}
 DEFAULT_TERMS = ("ITEM", "ALFA", "BRAV", "CHAR", "FORM", "MODE")
 
 
@@ -86,11 +101,15 @@ def random_candy_prompt() -> tuple[str, int]:
     )
 
 
-def question_prompt(question_id: str) -> tuple[str, int]:
+def question_prompt(question_id: str) -> tuple[str, int | str]:
     if question_id == "candy":
         return random_candy_prompt()
     if question_id == "cup":
         return CUP_PROMPT, 8
+    if question_id == "probability":
+        return PROBABILITY_PROMPT, "319/1728"
+    if question_id == "dag10":
+        return DAG_PROMPT, "666"
     raise ValueError("不支持的题目")
 
 

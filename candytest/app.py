@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 
 from .auth import AuthStateError, ServerAuthStore
-from . import CODEX_EFFORTS, MAX_ROUNDS, PI_EFFORTS, QUESTION_NAMES
+from . import CODEX_EFFORTS, MAX_ROUNDS, PI_EFFORTS, QUESTION_DEFAULTS, QUESTION_NAMES
 from .cli import cli_availability
 from .jobs import JobManager
 from .storage import Database, default_data_dir
@@ -628,7 +628,7 @@ def create_app(data_dir: Path | None = None) -> Flask:
         question_id = data.get("question_id", "candy")
         if not isinstance(question_id, str) or question_id not in QUESTION_NAMES:
             return api_error("INVALID_QUESTION", "请选择有效题目")
-        default_rounds, default_effort = (2, "medium") if question_id == "cup" else (5, "low")
+        default_rounds, default_effort = QUESTION_DEFAULTS[question_id]
         rounds = data.get("rounds", default_rounds)
         if not isinstance(rounds, int) or isinstance(rounds, bool) or not 1 <= rounds <= MAX_ROUNDS:
             return api_error("INVALID_ROUNDS", f"每站轮数必须是 1 到 {MAX_ROUNDS} 的整数")
