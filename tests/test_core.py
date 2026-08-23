@@ -17,10 +17,11 @@ import tempfile
 import threading
 import time
 import unittest
+from itertools import product
 from pathlib import Path
 from unittest.mock import patch
 
-from candytest import PROMPT
+from candytest import candy_prompt, random_candy_prompt
 from candytest import cli
 from candytest.jobs import JobManager
 from candytest.cli import InvocationCancelled
@@ -69,12 +70,49 @@ def run_payload(job_id: int, *, gateway_id: int = 1, name: str = "站点 A",
 
 
 class CliParsingAndIsolationTests(unittest.TestCase):
-    def test_grading_matches_only_independent_21(self):
-        self.assertTrue(cli.ANSWER_PATTERN.search("结果为 21。"))
-        self.assertTrue(cli.ANSWER_PATTERN.search("21, 但是需要说明"))
-        self.assertFalse(cli.ANSWER_PATTERN.search("121"))
-        self.assertFalse(cli.ANSWER_PATTERN.search("210"))
-        self.assertFalse(cli.ANSWER_PATTERN.search(""))
+    def test_dynamic_prompt_computes_expected_answer(self):
+        prompt, expected = candy_prompt((7, 9, 8, 7, 6, 4))
+        self.assertEqual(expected, 21)
+        for term in ("ITEM", "ALFA", "BRAV", "CHAR", "FORM", "MODE"):
+            self.assertIn(term, prompt)
+        self.assertIn("不同形态靠手感可以分辨", prompt)
+        self.assertIn("参赛者需要在活动前决定取出的", prompt)
+        for explicit_hint in ("类别只能在取出后确认", "可据此决定", "两种形态各取多少件"):
+            self.assertNotIn(explicit_hint, prompt)
+
+    def test_dynamic_answer_formula_matches_small_brute_force(self):
+        for counts in product((1, 2), repeat=6):
+            round_apple, round_peach, round_watermelon, star_apple, star_peach, star_watermelon = counts
+            possible = [
+                circles + stars
+                for circles in range(sum(counts[:3]) + 1)
+                for stars in range(sum(counts[3:]) + 1)
+                if circles > round_watermelon
+                and stars > star_watermelon
+                and (circles > round_peach + round_watermelon or stars > star_peach + star_watermelon)
+                and (circles > round_apple + round_watermelon or stars > star_apple + star_watermelon)
+            ]
+            self.assertEqual(candy_prompt(counts)[1], min(possible))
+
+    def test_random_prompt_replaces_keywords_and_draws_six_counts(self):
+        letters = list("ABCDEFGHIJKLMNOPQRSTUVWX")
+        with patch("candytest.random.sample", return_value=letters) as sample, \
+             patch("candytest.random.randint", side_effect=(1, 2, 3, 4, 5, 6)) as randint:
+            prompt, expected = random_candy_prompt()
+        sample.assert_called_once_with("ABCDEFGHIJKLMNOPQRSTUVWXYZ", 24)
+        self.assertEqual([item.args for item in randint.call_args_list], [(1, 20)] * 6)
+        self.assertEqual(expected, 13)
+        for term in ("ABCD", "EFGH", "IJKL", "MNOP", "QRST", "UVWX"):
+            self.assertIn(term, prompt)
+        for keyword in ("糖果", "苹果", "桃子", "草莓", "西瓜", "圆形", "五角星"):
+            self.assertNotIn(keyword, prompt)
+
+    def test_grading_matches_expected_integer_anywhere(self):
+        self.assertTrue(cli.answer_is_correct("结果为 21。", 21))
+        self.assertTrue(cli.answer_is_correct("21 不正确，最终是 22", 21))
+        self.assertFalse(cli.answer_is_correct("121", 21))
+        self.assertFalse(cli.answer_is_correct("210", 21))
+        self.assertFalse(cli.answer_is_correct("", 21))
 
     def test_parse_pi_jsonl_ignores_noise_and_uses_assistant_usage(self):
         stdout = "\n".join((
@@ -184,13 +222,15 @@ class CliParsingAndIsolationTests(unittest.TestCase):
                     "role": "assistant", "content": [{"type": "text", "text": "21"}], "usage": {}}})
             else:
                 stdout = json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "21"}})
-            self.assertEqual(kwargs["input"], PROMPT)
+            self.assertEqual(kwargs["input"], "随机题目")
             return subprocess.CompletedProcess(command, 0, stdout, "")
 
         with patch("candytest.cli.resolve_executable", side_effect=lambda engine: f"fake-{engine}"), \
              patch("candytest.cli.subprocess.run", side_effect=fake_run):
-            self.assertEqual(cli.invoke("pi", gateway(), "override-model", "medium", 1, proxy_url=PROXY)["answer"], "21")
-            self.assertEqual(cli.invoke("codex", gateway(), "override-model", "medium", 1)["answer"], "21")
+            self.assertEqual(cli.invoke("pi", gateway(), "override-model", "medium", 1, proxy_url=PROXY,
+                                        prompt="随机题目")["answer"], "21")
+            self.assertEqual(cli.invoke("codex", gateway(), "override-model", "medium", 1,
+                                        prompt="随机题目")["answer"], "21")
 
         self.assertEqual(len(captures), 2)
         for command, config, env in captures:
@@ -317,6 +357,11 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn('multiplierCell.dataset.field = "multiplier"', source)
         self.assertIn("inline-editor", source)
         self.assertIn('api_key: ""', source)
+        self.assertIn("site.multiplier", source)
+        self.assertIn("stat-multiplier", source)
+        self.assertNotIn("倍率：", source)
+        self.assertIn("await loadHistory();", source)
+        self.assertIn("await refreshCurrent();", source)
 
         self.assertIn("multiplier: Number(f.multiplier.value)", source)
         self.assertIn('previous = select.value || "low"', source)
@@ -348,6 +393,9 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn(".stat-selectable.selected", style)
         self.assertIn(".stat-selectable.not-selected", style)
         self.assertIn(".stat-actions", style)
+        self.assertIn(".stat-multiplier", style)
+        self.assertIn("text-align:right", style)
+        self.assertIn("4.5rem 12rem", style)
         self.assertIn(".drag-handle", style)
         self.assertIn(".gateway-row.drag-over", style)
         self.assertIn(".inline-editable", style)
@@ -502,6 +550,32 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(self.db.delete_gateway(site["id"]), (True, 0))
         self.assertEqual(self.db.gateways(), [])
         self.assertEqual(self.db.gateway_records([site["id"]]), [])
+
+    def test_gateway_metadata_updates_current_and_history_display(self):
+        site = self.create_site()
+        job_payload_data = job_payload()
+        job_payload_data["gateway_snapshot"] = json.dumps([
+            {"id": site["id"], "name": "旧名称", "multiplier": 1}
+        ])
+        job_id = self.db.create_job(job_payload_data)
+        self.db.add_run(run_payload(job_id, gateway_id=site["id"], name="旧名称"))
+
+        self.db.update_gateway(site["id"], {
+            "name": "新名称", "base_url": site["base_url"], "api_key": None,
+            "model": site["model"], "multiplier": 0.08, "enabled": 1,
+        })
+        current = self.db.job(job_id)
+        self.assertEqual(
+            (current["gateways"][0]["gateway_name"], current["gateways"][0]["multiplier"]),
+            ("新名称", 0.08),
+        )
+        self.assertEqual(current["runs"][0]["gateway_name"], "新名称")
+        history = self.db.history()
+        self.assertEqual(
+            (history["gateways"][0]["gateway_name"], history["gateways"][0]["multiplier"]),
+            ("新名称", 0.08),
+        )
+        self.assertEqual(history["runs"][0]["gateway_name"], "新名称")
 
     def test_history_groups_by_gateway_and_excludes_errors_from_denominator(self):
         site = self.create_site()
@@ -711,16 +785,21 @@ class SchedulingTests(unittest.TestCase):
         events: list[str] = []
         proxies: list[str | None] = []
 
-        def fake_invoke(_engine, site, _model, _effort, _timeout, _cancel_event, proxy_url):
+        prompts: list[str] = []
+
+        def fake_invoke(_engine, site, _model, _effort, _timeout, _cancel_event, proxy_url, prompt):
             events.append(site["name"])
             proxies.append(proxy_url)
-            return {"answer": "21", "elapsed_seconds": 0.0}
+            prompts.append(prompt)
+            return {"answer": "答案 21" if prompt == "题目一" else "答案 29", "elapsed_seconds": 0.0}
 
         job_id = self.make_job("serial", 2)
-        with patch("candytest.jobs.invoke", side_effect=fake_invoke):
+        with patch("candytest.jobs.random_candy_prompt", side_effect=[("题目一", 21), ("题目二", 29)]), \
+             patch("candytest.jobs.invoke", side_effect=fake_invoke):
             self.manager._run_job(job_id, "pi", "serial", 2, "medium", None, self.sites, proxy_url=PROXY)
         self.assertEqual(events, ["A", "A", "B", "B"])
         self.assertEqual(proxies, [PROXY] * 4)
+        self.assertEqual(prompts, ["题目一", "题目二", "题目一", "题目二"])
         stored_job = self.db.job(job_id)
         self.assertEqual(stored_job["status"], "completed")
         self.assertEqual(stored_job["summary"], {
@@ -736,7 +815,7 @@ class SchedulingTests(unittest.TestCase):
         active_total = 0
         max_total = 0
 
-        def fake_invoke(_engine, site, _model, _effort, _timeout, _cancel_event, _proxy_url):
+        def fake_invoke(_engine, site, _model, _effort, _timeout, _cancel_event, _proxy_url, _prompt):
             nonlocal active_total, max_total
             with lock:
                 active_by_site[site["name"]] += 1
@@ -784,7 +863,7 @@ class SchedulingTests(unittest.TestCase):
     def test_cancel_stops_active_call_and_future_rounds(self):
         entered = threading.Event()
 
-        def blocking_invoke(_engine, _site, _model, _effort, _timeout, cancel_event, _proxy_url):
+        def blocking_invoke(_engine, _site, _model, _effort, _timeout, cancel_event, _proxy_url, _prompt):
             entered.set()
             cancel_event.wait(5)
             raise InvocationCancelled("用户已中断测试")

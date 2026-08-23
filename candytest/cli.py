@@ -14,9 +14,12 @@ from typing import Any
 
 from . import DEFAULT_TIMEOUT_SECONDS, PROMPT
 
-ANSWER_PATTERN = re.compile(r"(?<!\d)21(?!\d)")
 SECRET_ENV = "CANDYTEST_GATEWAY_API_KEY"
 PI_USER_AGENT = "codex-tui/0.149.0 (Windows 10.0.26200; x86_64) WindowsTerminal (codex-tui; 0.149.0)"
+
+
+def answer_is_correct(answer: str, expected: int) -> bool:
+    return re.search(rf"(?<!\d){expected}(?!\d)", answer) is not None
 
 
 class InvocationCancelled(RuntimeError):
@@ -50,7 +53,7 @@ def _terminate_process_tree(proc: subprocess.Popen[str]) -> None:
 
 def _run_cancellable(
     command: list[str], *, cwd: Path, env: dict[str, str], timeout: int,
-    cancel_event: threading.Event,
+    cancel_event: threading.Event, prompt: str = PROMPT,
 ) -> subprocess.CompletedProcess[str]:
     if cancel_event.is_set():
         raise InvocationCancelled("用户已中断测试")
@@ -72,7 +75,7 @@ def _run_cancellable(
         **popen_options,
     )
     deadline = time.monotonic() + timeout
-    pending_input: str | None = PROMPT
+    pending_input: str | None = prompt
     while True:
         try:
             stdout, stderr = proc.communicate(input=pending_input, timeout=0.2)
@@ -276,7 +279,8 @@ def _codex_config(base_url: str) -> str:
 def invoke(engine: str, gateway: dict[str, Any], model: str, effort: str,
            timeout: int = DEFAULT_TIMEOUT_SECONDS,
            cancel_event: threading.Event | None = None,
-           proxy_url: str | None = None) -> dict[str, Any]:
+           proxy_url: str | None = None,
+           prompt: str = PROMPT) -> dict[str, Any]:
     """Execute exactly one isolated CLI test. This function never logs a secret."""
     executable = resolve_executable(engine)
     if not executable:
@@ -323,12 +327,13 @@ def invoke(engine: str, gateway: dict[str, Any], model: str, effort: str,
         try:
             if cancel_event is None:
                 proc = subprocess.run(
-                    command, input=PROMPT, capture_output=True, text=True, encoding="utf-8",
+                    command, input=prompt, capture_output=True, text=True, encoding="utf-8",
                     errors="replace", cwd=cwd, env=env, timeout=timeout,
                 )
             else:
                 proc = _run_cancellable(
-                    command, cwd=cwd, env=env, timeout=timeout, cancel_event=cancel_event,
+                    command, cwd=cwd, env=env, timeout=timeout,
+                    cancel_event=cancel_event, prompt=prompt,
                 )
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(f"调用超时（{timeout} 秒）") from exc

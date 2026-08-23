@@ -5,8 +5,8 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from . import DEFAULT_TIMEOUT_SECONDS
-from .cli import ANSWER_PATTERN, InvocationCancelled, invoke
+from . import DEFAULT_TIMEOUT_SECONDS, random_candy_prompt
+from .cli import InvocationCancelled, answer_is_correct, invoke
 from .storage import Database, utcnow
 
 
@@ -44,7 +44,7 @@ class JobManager:
                 raise RuntimeError("WebDAV 同步进行中，暂时不能启动测试")
             if self._active_id is not None or self.db.active_job() is not None:
                 raise RuntimeError("已有测试任务正在运行")
-            snapshot = [{"id": site["id"], "name": site["name"]} for site in gateways]
+            snapshot = [{"id": site["id"], "name": site["name"], "multiplier": site.get("multiplier")} for site in gateways]
             job_id = self.db.create_job({
                 "engine": engine, "mode": mode, "rounds": rounds,
                 "reasoning_effort": effort, "model_override": model_override,
@@ -82,12 +82,13 @@ class JobManager:
         final_status = "completed"
         final_error: str | None = None
         try:
+            questions = [random_candy_prompt() for _ in range(rounds)]
             if mode == "parallel":
                 with ThreadPoolExecutor(max_workers=len(gateways), thread_name_prefix="candytest") as pool:
                     futures = [
                         pool.submit(
-                            self._run_gateway, job_id, engine, rounds, effort,
-                            model_override, gateway, cancel_event, proxy_url,
+                            self._run_gateway, job_id, engine, effort,
+                            model_override, gateway, questions, cancel_event, proxy_url,
                         )
                         for gateway in gateways
                     ]
@@ -98,7 +99,7 @@ class JobManager:
                     if cancel_event.is_set():
                         break
                     self._run_gateway(
-                        job_id, engine, rounds, effort, model_override, gateway,
+                        job_id, engine, effort, model_override, gateway, questions,
                         cancel_event, proxy_url,
                     )
             if cancel_event.is_set():
@@ -116,26 +117,27 @@ class JobManager:
                     self._active_id = None
                     self._cancel_event = None
 
-    def _run_gateway(self, job_id: int, engine: str, rounds: int, effort: str,
+    def _run_gateway(self, job_id: int, engine: str, effort: str,
                      model_override: str | None, gateway: dict[str, Any],
+                     questions: list[tuple[str, int]],
                      cancel_event: threading.Event | None = None,
                      proxy_url: str | None = None) -> None:
         cancel_event = cancel_event or threading.Event()
         # Deliberately sequential: providers commonly rate-limit one API key/model.
-        for number in range(1, rounds + 1):
+        for number, (prompt, expected) in enumerate(questions, 1):
             if cancel_event.is_set():
                 break
             try:
                 result = invoke(
                     engine, gateway, model_override or gateway["model"], effort,
-                    DEFAULT_TIMEOUT_SECONDS, cancel_event, proxy_url,
+                    DEFAULT_TIMEOUT_SECONDS, cancel_event, proxy_url, prompt,
                 )
                 answer = result.get("answer", "")
                 run = {
                     "job_id": job_id, "gateway_id": gateway["id"],
                     "gateway_name": gateway["name"], "round_number": number,
                     "status": "graded", "answer": answer,
-                    "is_correct": int(bool(ANSWER_PATTERN.search(answer))),
+                    "is_correct": int(answer_is_correct(answer, expected)),
                     "elapsed_seconds": result.get("elapsed_seconds"),
                     "input_tokens": result.get("input_tokens"),
                     "output_tokens": result.get("output_tokens"),

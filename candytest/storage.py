@@ -520,6 +520,10 @@ class Database:
             if not job:
                 return None
             runs = conn.execute("SELECT * FROM test_runs WHERE job_id=? ORDER BY id", (job_id,)).fetchall()
+            gateway_metadata = {
+                row["id"]: dict(row)
+                for row in conn.execute("SELECT id,name,multiplier FROM gateways").fetchall()
+            }
             today_start, tomorrow_start = utc_day_bounds()
             history_rows = conn.execute("""SELECT gateway_id,
                 SUM(CASE WHEN status = 'graded' THEN 1 ELSE 0 END) graded,
@@ -537,7 +541,11 @@ class Database:
         import json
         snapshots = json.loads(job["gateway_snapshot"])
         history = {row["gateway_id"]: dict(row) for row in history_rows}
-        stats = {str(x["id"]): {"gateway_id": x["id"], "gateway_name": x["name"], "completed": 0,
+        stats = {str(x["id"]): {
+                 "gateway_id": x["id"],
+                 "gateway_name": gateway_metadata.get(x["id"], {}).get("name", x["name"]),
+                 "multiplier": gateway_metadata.get(x["id"], {}).get("multiplier", x.get("multiplier")),
+                 "completed": 0,
                  "correct": 0, "incorrect": 0, "errors": 0, "cancelled": 0, "graded": 0, "accuracy": None,
                  "historical_graded": 0, "historical_correct": 0, "historical_errors": 0,
                  "historical_cancelled": 0, "historical_accuracy": None,
@@ -547,11 +555,17 @@ class Database:
         result_runs = []
         for row in runs:
             run = dict(row)
+            current_gateway = gateway_metadata.get(row["gateway_id"])
+            if current_gateway:
+                run["gateway_name"] = current_gateway["name"]
             run["is_correct"] = None if run["is_correct"] is None else bool(run["is_correct"])
             run["error_kind"] = classify_error(run["error"]) if run["status"] == "error" else None
             result_runs.append(run)
             stat = stats.setdefault(str(row["gateway_id"]), {
-                "gateway_id": row["gateway_id"], "gateway_name": row["gateway_name"], "completed": 0,
+                "gateway_id": row["gateway_id"],
+                "gateway_name": current_gateway["name"] if current_gateway else row["gateway_name"],
+                "multiplier": current_gateway["multiplier"] if current_gateway else None,
+                "completed": 0,
                 "correct": 0, "incorrect": 0, "errors": 0, "cancelled": 0, "graded": 0, "accuracy": None,
                 "historical_graded": 0, "historical_correct": 0, "historical_errors": 0,
                 "historical_cancelled": 0, "historical_accuracy": None,
@@ -623,19 +637,33 @@ class Database:
                 )).fetchall()
             recent = conn.execute("""SELECT r.*, j.engine FROM test_runs r JOIN test_jobs j ON j.id=r.job_id
                                   ORDER BY r.id DESC LIMIT 100""").fetchall()
+            gateway_metadata = {
+                row["id"]: dict(row)
+                for row in conn.execute("SELECT id,name,multiplier FROM gateways").fetchall()
+            }
         sites = []
         for row in aggregate:
             d = dict(row)
+            current_gateway = gateway_metadata.get(d["gateway_id"])
+            if current_gateway:
+                d["gateway_name"] = current_gateway["name"]
+            d["multiplier"] = current_gateway["multiplier"] if current_gateway else None
             d["accuracy"] = round(d["correct"] * 100 / d["graded"], 1) if d["graded"] else None
             d["today_accuracy"] = (
                 round(d["today_correct"] * 100 / d["today_graded"], 1)
                 if d["today_graded"] else None
             )
             sites.append(d)
+        sites.sort(key=lambda site: site["gateway_name"].casefold())
         return {
             "gateways": sites,
             "runs": [
-                {**dict(row), "error_kind": classify_error(row["error"]) if row["status"] == "error" else None}
+                {
+                    **dict(row),
+                    "gateway_name": gateway_metadata.get(row["gateway_id"], {}).get("name", row["gateway_name"]),
+                    "multiplier": gateway_metadata.get(row["gateway_id"], {}).get("multiplier"),
+                    "error_kind": classify_error(row["error"]) if row["status"] == "error" else None,
+                }
                 for row in recent
             ],
         }
