@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 
 from .auth import AuthStateError, ServerAuthStore
-from . import CODEX_EFFORTS, MAX_ROUNDS, PI_EFFORTS
+from . import CODEX_EFFORTS, MAX_ROUNDS, PI_EFFORTS, QUESTION_NAMES
 from .cli import cli_availability
 from .jobs import JobManager
 from .storage import Database, default_data_dir
@@ -625,10 +625,14 @@ def create_app(data_dir: Path | None = None) -> Flask:
         mode = data.get("mode", "parallel")
         if mode not in {"serial", "parallel"}:
             return api_error("INVALID_MODE", "测试模式必须为 serial 或 parallel")
-        rounds = data.get("rounds", 5)
+        question_id = data.get("question_id", "candy")
+        if not isinstance(question_id, str) or question_id not in QUESTION_NAMES:
+            return api_error("INVALID_QUESTION", "请选择有效题目")
+        default_rounds, default_effort = (2, "medium") if question_id == "cup" else (5, "low")
+        rounds = data.get("rounds", default_rounds)
         if not isinstance(rounds, int) or isinstance(rounds, bool) or not 1 <= rounds <= MAX_ROUNDS:
             return api_error("INVALID_ROUNDS", f"每站轮数必须是 1 到 {MAX_ROUNDS} 的整数")
-        effort = data.get("reasoning_effort", "low")
+        effort = data.get("reasoning_effort", default_effort)
         allowed = PI_EFFORTS if engine == "pi" else CODEX_EFFORTS
         if effort not in allowed:
             return api_error("INVALID_REASONING", f"{engine} 不支持该 reasoning effort")
@@ -647,7 +651,9 @@ def create_app(data_dir: Path | None = None) -> Flask:
         proxy = db.proxy_settings()
         proxy_url = proxy["url"] if proxy["enabled"] else None
         try:
-            job_id = manager.start(engine, mode, rounds, effort, override, gateways, proxy_url)
+            job_id = manager.start(
+                engine, mode, rounds, effort, override, gateways, proxy_url, question_id,
+            )
         except RuntimeError as exc:
             return api_error("JOB_CONFLICT", str(exc), 409)
         return jsonify({"job_id": job_id, "status": "queued"}), 201

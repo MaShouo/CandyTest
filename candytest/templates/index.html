@@ -31,8 +31,9 @@
 
   <section class="panel"><div class="section-title"><div><h2>开始测试</h2><p>并行：站点之间同时测试，单个站点内仍逐轮执行。串行：所有站点和轮次按选择顺序执行。</p></div></div>
     <form id="jobForm" class="controls">
+      <label>题目<select name="question_id" id="question"><option value="candy">糖果题</option><option value="cup">水杯题</option></select></label>
       <label>CLI 引擎<select name="engine" id="engine"><option value="pi">pi</option><option value="codex">Codex</option></select></label>
-      <label>每站轮数<input name="rounds" type="number" min="1" max="100" value="5" required></label>
+      <label>每站轮数<input name="rounds" id="rounds" type="number" min="1" max="100" value="5" required></label>
       <label>Reasoning effort<select name="reasoning_effort" id="effort"></select></label>
       <label>模型覆盖（可选）<input name="model_override" maxlength="300" placeholder="留空使用各站默认模型"></label>
       <label>调度方式<select name="mode"><option value="parallel">并行（默认）</option><option value="serial">串行</option></select></label>

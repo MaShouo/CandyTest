@@ -47,6 +47,16 @@ PROMPT_TEMPLATES = (
 参加者需事先确定拿取总数。最少拿取多少件，才能保证手中有“{shape_b}-{first}”与“{shape_a}-{second}”，或有“{shape_b}-{second}”与“{shape_a}-{first}”？
 """,
 )
+CUP_PROMPT = """有一个水杯配对游戏。共有 4 种不同颜色的水杯，每种颜色各有两个。将同色的两个水杯分别放在上下两层，因此上下两层各有 4 个水杯。
+下层 4 个水杯按某个未知顺序排列，挑战者无法看到它们；上层水杯的颜色和位置则完全可见。游戏开始后，挑战者可以反复进行以下操作：
+  1. 向裁判询问当前有多少个位置满足“上下两个水杯颜色相同”。裁判只回答匹配位置的总数，不透露具体是哪些位置。
+  2. 根据目前获得的所有信息，挑战者可以选择交换上层任意两个相邻位置的水杯，注意只能是相邻，不能是任意两个。
+当 4 个位置全部匹配时，游戏结束。问题：
+挑战者应采用何种策略，才能保证对于下层水杯的任意排列都能完成配对？所有能保证成功的策略中，最坏情况所需的交换次数最少是多少？
+回答时请不要进行联网搜索，也不要写代码来辅助计算(包括思考过程中)。
+假设答案是 x ，你需要给出严格的证明，为什么 x 可行，为什么小于 x 不可行。
+"""
+QUESTION_NAMES = {"candy": "糖果题", "cup": "水杯题"}
 DEFAULT_TERMS = ("ITEM", "ALFA", "BRAV", "CHAR", "FORM", "MODE")
 
 
@@ -74,6 +84,14 @@ def random_candy_prompt() -> tuple[str, int]:
         tuple(random.randint(1, 20) for _ in range(6)), terms,
         random.choice(PROMPT_TEMPLATES),
     )
+
+
+def question_prompt(question_id: str) -> tuple[str, int]:
+    if question_id == "candy":
+        return random_candy_prompt()
+    if question_id == "cup":
+        return CUP_PROMPT, 8
+    raise ValueError("不支持的题目")
 
 
 # Fallback for direct CLI use; scheduled tests generate a fresh prompt per round.

@@ -5,7 +5,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from . import DEFAULT_TIMEOUT_SECONDS, random_candy_prompt
+from . import DEFAULT_TIMEOUT_SECONDS, question_prompt
 from .cli import InvocationCancelled, answer_is_correct, invoke
 from .storage import Database, utcnow
 
@@ -38,7 +38,7 @@ class JobManager:
 
     def start(self, engine: str, mode: str, rounds: int, effort: str,
               model_override: str | None, gateways: list[dict[str, Any]],
-              proxy_url: str | None = None) -> int:
+              proxy_url: str | None = None, question_id: str = "candy") -> int:
         with self._lock:
             if self._sync_reserved:
                 raise RuntimeError("WebDAV 同步进行中，暂时不能启动测试")
@@ -56,7 +56,8 @@ class JobManager:
             self._cancel_event = cancel_event
             thread = threading.Thread(
                 target=self._run_job,
-                args=(job_id, engine, mode, rounds, effort, model_override, gateways, cancel_event, proxy_url),
+                args=(job_id, engine, mode, rounds, effort, model_override, gateways,
+                      cancel_event, proxy_url, question_id),
                 daemon=True,
             )
             thread.start()
@@ -74,7 +75,7 @@ class JobManager:
     def _run_job(self, job_id: int, engine: str, mode: str, rounds: int, effort: str,
                  model_override: str | None, gateways: list[dict[str, Any]],
                  cancel_event: threading.Event | None = None,
-                 proxy_url: str | None = None) -> None:
+                 proxy_url: str | None = None, question_id: str = "candy") -> None:
         # A default keeps direct unit-level calls backwards compatible.
         cancel_event = cancel_event or threading.Event()
         with self._lock:
@@ -82,7 +83,7 @@ class JobManager:
         final_status = "completed"
         final_error: str | None = None
         try:
-            questions = [random_candy_prompt() for _ in range(rounds)]
+            questions = [question_prompt(question_id) for _ in range(rounds)]
             if mode == "parallel":
                 with ThreadPoolExecutor(max_workers=len(gateways), thread_name_prefix="candytest") as pool:
                     futures = [

@@ -3,6 +3,7 @@
   const $ = (s) => document.querySelector(s);
   const state = { gateways: [], history: new Map(), runtime: null, webdav: null, syncBusy: false, editing: null, inlineEditing: false, currentId: null, currentJob: null, currentJobId: null, selectedGatewayIds: new Set(), draggingGatewayId: null, reordering: false };
   const efforts = { pi: ["off", "minimal", "low", "medium", "high", "xhigh", "max"], codex: ["low", "medium", "high", "xhigh", "max", "ultra"] };
+  const questionDefaults = { candy: { rounds: 5, effort: "low" }, cup: { rounds: 2, effort: "medium" } };
 
   function node(tag, text, className) { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (className) el.className = className; return el; }
   function clear(el, children = []) { el.replaceChildren(...children); }
@@ -38,7 +39,8 @@
   }
   function openDetailKeys(container) { return new Set([...container.querySelectorAll("details[open][data-detail-key]")].map(item => item.dataset.detailKey)); }
   function details(answer, error, key, opened = new Set()) { const d = document.createElement("details"), s = node("summary", "查看"); d.dataset.detailKey = key; d.open = opened.has(key); d.append(s); if (answer) { d.append(node("strong", "回答全文")); d.append(node("pre", answer)); } if (error) { d.append(node("strong", "错误详情", "warn")); d.append(node("pre", error)); } if (!answer && !error) d.append(node("span", "无额外详情")); return d; }
-  function setEfforts() { const select = $("#effort"), previous = select.value || "low"; clear(select, efforts[$("#engine").value].map(value => { const o = node("option", value); o.value = value; if (value === previous || (!efforts[$("#engine").value].includes(previous) && value === "low")) o.selected = true; return o; })); }
+  function setEfforts(preferred) { const select = $("#effort"), previous = preferred || select.value || "low"; clear(select, efforts[$("#engine").value].map(value => { const o = node("option", value); o.value = value; if (value === previous || (!efforts[$("#engine").value].includes(previous) && value === "low")) o.selected = true; return o; })); }
+  function setQuestionDefaults() { const defaults = questionDefaults[$("#question").value]; $("#rounds").value = defaults.rounds; setEfforts(defaults.effort); }
   function renderEngines() { const el = $("#engineStatus"); const engines = state.runtime.engines; clear(el, ["pi", "codex"].map(name => node("span", `${name}: ${engines[name] ? "可用" : "未安装"}`, `badge ${engines[name] ? "ok" : "error"}`))); const select = $("#engine"); for (const option of select.options) option.disabled = !engines[option.value]; if (select.selectedOptions[0]?.disabled) select.value = engines.pi ? "pi" : "codex"; setEfforts(); $("#startJob").disabled = !engines.pi && !engines.codex; }
   function shortRevision(value) { return value ? `${value.slice(0, 8)}…` : "无"; }
   function renderWebdav(settings) { state.webdav = settings; updateSyncControls(); }
@@ -224,8 +226,7 @@
   function statCard(site, historical = false, rounds = null, selectable = false) {
     const currentLow = site.accuracy != null && site.accuracy < 80;
     const todayLow = historical && site.today_accuracy != null && site.today_accuracy < 80;
-    const historyLow = !historical && site.historical_accuracy != null && site.historical_accuracy < 80;
-    const low = currentLow || todayLow || historyLow;
+    const low = currentLow || todayLow;
     const selected = selectable && state.selectedGatewayIds.has(Number(site.gateway_id));
     const classes = ["stat"];
     if (low) classes.push("low");
@@ -266,7 +267,6 @@
     const alerts = node("div", undefined, "stat-alerts");
     if (currentLow) alerts.append(node("p", historical ? "历史正确率低于 80%，请重点复核。" : "当前正确率低于 80%，请重点复核。", "warn"));
     if (todayLow) alerts.append(node("p", "今日正确率低于 80%，请重点复核。", "warn"));
-    if (historyLow) alerts.append(node("p", "历史正确率低于 80%，请重点复核。", "warn"));
     div.append(alerts);
     if (historical) {
       const actions = node("div", undefined, "stat-actions");
@@ -361,8 +361,9 @@
   $("#pushWebdav").onclick = async () => { if (!confirm("Push 会用本机全部数据覆盖云端。继续吗？")) return; setSyncBusy(true); try { let data; try { data = await api("/api/webdav/push", { method: "POST", body: JSON.stringify({ force: false }) }); } catch (e) { if (e.code !== "WEBDAV_CONFLICT" || !confirm("远端已被其他设备更新。确定强制用本机数据覆盖云端吗？")) throw e; data = await api("/api/webdav/push", { method: "POST", body: JSON.stringify({ force: true }) }); } await loadWebdav(); flash(`Push 完成：revision ${shortRevision(data.result.revision)}${data.result.warnings?.length ? `；${data.result.warnings.join("；")}` : ""}`); } catch (e) { flash(e.message, true); } finally { setSyncBusy(false); } };
   $("#pullWebdav").onclick = async () => { if (!confirm("危险：Pull 不会备份，会用云端快照替换本机全部中转站、API Key、代理设置和历史。确定继续吗？")) return; setSyncBusy(true); try { const data = await api("/api/webdav/pull", { method: "POST", body: JSON.stringify({ confirm: true }) }); flash(`Pull 完成：revision ${shortRevision(data.result.revision)}，正在刷新页面…`); setTimeout(() => location.reload(), 300); } catch (e) { flash(e.message, true); setSyncBusy(false); } };
   $("#gatewayForm").onsubmit = async (event) => { event.preventDefault(); const f = event.currentTarget; const body = { name: f.name.value, multiplier: Number(f.multiplier.value), base_url: f.base_url.value, model: f.model.value, api_key: f.api_key.value, enabled: f.enabled.checked }; try { await api(state.editing ? `/api/gateways/${state.editing.id}` : "/api/gateways", { method: state.editing ? "PUT" : "POST", body: JSON.stringify(body) }); $("#gatewayPanel").hidden = true; flash("中转站已更新。"); await loadGateways(); await loadHistory(); await refreshCurrent(); } catch (e) { flash(e.message, true); } };
-  $("#engine").onchange = setEfforts;
-  $("#jobForm").onsubmit = async (event) => { event.preventDefault(); const f = event.currentTarget, gateway_ids = [...document.querySelectorAll("#gatewayRows input[type=checkbox]:checked")].map(x => Number(x.value)); const body = { engine: f.engine.value, rounds: Number(f.rounds.value), reasoning_effort: f.reasoning_effort.value, model_override: f.model_override.value, mode: f.mode.value, gateway_ids }; try { const result = await api("/api/jobs", { method: "POST", body: JSON.stringify(body) }); flash(`任务 #${result.job_id} 已启动。`); await refreshCurrent(); } catch (e) { flash(e.message, true); } };
+  $("#engine").onchange = () => setEfforts();
+  $("#question").onchange = setQuestionDefaults;
+  $("#jobForm").onsubmit = async (event) => { event.preventDefault(); const f = event.currentTarget, gateway_ids = [...document.querySelectorAll("#gatewayRows input[type=checkbox]:checked")].map(x => Number(x.value)); const body = { question_id: f.question_id.value, engine: f.engine.value, rounds: Number(f.rounds.value), reasoning_effort: f.reasoning_effort.value, model_override: f.model_override.value, mode: f.mode.value, gateway_ids }; try { const result = await api("/api/jobs", { method: "POST", body: JSON.stringify(body) }); flash(`任务 #${result.job_id} 已启动。`); await refreshCurrent(); } catch (e) { flash(e.message, true); } };
   $("#stopJob").onclick = async () => { if (!state.currentId || !confirm("确定中断当前测试？已完成的轮次会保留，正在调用的 CLI 进程将被终止。")) return; const button = $("#stopJob"); button.disabled = true; button.textContent = "正在中断…"; try { await api(`/api/jobs/${state.currentId}/cancel`, { method: "POST" }); flash("已发送中断请求，正在终止 CLI 调用…"); await refreshCurrent(); } catch (e) { flash(e.message, true); button.disabled = false; button.textContent = "中断测试"; } };
   $("#clearHistory").onclick = async () => { if (!confirm("确认清空所有测试任务和运行历史？中转站配置不会删除。")) return; try { await api("/api/history", { method: "DELETE", body: JSON.stringify({ confirm: true }) }); flash("历史已清空。"); await loadHistory(); renderJob(null); } catch (e) { flash(e.message, true); } };
   const logoutButton = $("#logout");

@@ -21,7 +21,7 @@ from itertools import product
 from pathlib import Path
 from unittest.mock import patch
 
-from candytest import PROMPT_TEMPLATES, candy_prompt, random_candy_prompt
+from candytest import CUP_PROMPT, PROMPT_TEMPLATES, candy_prompt, question_prompt, random_candy_prompt
 from candytest import cli
 from candytest.jobs import JobManager
 from candytest.cli import InvocationCancelled
@@ -94,6 +94,14 @@ class CliParsingAndIsolationTests(unittest.TestCase):
                     self.assertNotIn(explicit_hint, prompt)
                 for keyword in ("糖果", "苹果", "桃子", "草莓", "西瓜", "圆形", "五角星"):
                     self.assertNotIn(keyword, prompt)
+
+    def test_cup_question_has_fixed_answer_eight(self):
+        prompt, expected = question_prompt("cup")
+        self.assertEqual((prompt, expected), (CUP_PROMPT, 8))
+        self.assertIn("只能是相邻，不能是任意两个", prompt)
+        self.assertIn("为什么 x 可行，为什么小于 x 不可行", prompt)
+        with self.assertRaisesRegex(ValueError, "不支持的题目"):
+            question_prompt("missing")
 
     def test_dynamic_answer_formula_matches_small_brute_force(self):
         for counts in product((1, 2), repeat=6):
@@ -356,6 +364,8 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn("今日：正确", source)
         self.assertIn("历史：正确", source)
         self.assertIn("stat-details-stacked", source)
+        self.assertNotIn("const historyLow", source)
+        self.assertNotIn("if (historyLow)", source)
         self.assertNotIn("不计正确率", source)
         self.assertIn('details[open][data-detail-key]', source)
         self.assertIn("d.open = opened.has(key)", source)
@@ -381,10 +391,17 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn("await refreshCurrent();", source)
 
         self.assertIn("multiplier: Number(f.multiplier.value)", source)
-        self.assertIn('previous = select.value || "low"', source)
+        self.assertIn('previous = preferred || select.value || "low"', source)
+        self.assertIn('cup: { rounds: 2, effort: "medium" }', source)
+        self.assertIn('question_id: f.question_id.value', source)
+        self.assertIn('$("#question").onchange = setQuestionDefaults', source)
         self.assertIn('e.code !== "WEBDAV_CONFLICT"', source)
         self.assertIn("Pull 不会备份", source)
         template = (Path(__file__).parents[1] / "candytest/templates/index.html").read_text(encoding="utf-8")
+        self.assertIn('id="question"', template)
+        self.assertIn('<option value="candy">糖果题</option>', template)
+        self.assertIn('<option value="cup">水杯题</option>', template)
+        self.assertIn('id="rounds"', template)
         self.assertIn('id="selectAllGateways"', template)
         self.assertIn("正确/总次数", template)
         self.assertIn("<th>倍率</th>", template)
@@ -811,7 +828,7 @@ class SchedulingTests(unittest.TestCase):
             return {"answer": "答案 21" if prompt == "题目一" else "答案 29", "elapsed_seconds": 0.0}
 
         job_id = self.make_job("serial", 2)
-        with patch("candytest.jobs.random_candy_prompt", side_effect=[("题目一", 21), ("题目二", 29)]), \
+        with patch("candytest.jobs.question_prompt", side_effect=[("题目一", 21), ("题目二", 29)]), \
              patch("candytest.jobs.invoke", side_effect=fake_invoke):
             self.manager._run_job(job_id, "pi", "serial", 2, "medium", None, self.sites, proxy_url=PROXY)
         self.assertEqual(events, ["A", "A", "B", "B"])
@@ -824,6 +841,22 @@ class SchedulingTests(unittest.TestCase):
             "incorrect": 0, "errors": 0, "cancelled": 0, "accuracy": 100.0,
         })
         self.assertEqual(stored_job["gateways"][0]["historical_accuracy"], 100.0)
+
+    def test_cup_question_runs_selected_prompt_and_grades_eight(self):
+        prompts: list[str] = []
+
+        def fake_invoke(_engine, _site, _model, _effort, _timeout, _cancel_event, _proxy_url, prompt):
+            prompts.append(prompt)
+            return {"answer": "最坏情况最少交换 8 次", "elapsed_seconds": 0.0}
+
+        job_id = self.make_job("serial", 2)
+        with patch("candytest.jobs.invoke", side_effect=fake_invoke):
+            self.manager._run_job(
+                job_id, "pi", "serial", 2, "medium", None, self.sites,
+                question_id="cup",
+            )
+        self.assertEqual(prompts, [CUP_PROMPT] * 4)
+        self.assertEqual(self.db.job(job_id)["summary"]["correct"], 4)
 
     def test_parallel_mode_overlaps_sites_but_never_rounds_of_one_site(self):
         lock = threading.Lock()
@@ -971,6 +1004,22 @@ class ApiTests(unittest.TestCase):
             response = self.client.post("/api/jobs", json={"engine": "pi", "gateway_ids": [site_id]})
         self.assertEqual((response.status_code, response.get_json()["error"]["code"]), (409, "CLI_UNAVAILABLE"))
 
+    def test_job_api_selects_cup_defaults_and_rejects_unknown_question(self):
+        site_id = self.add_site()
+        manager = self.app.extensions["candytest_jobs"]
+        with patch("candytest.app.cli_availability", return_value={"pi": True, "codex": False}), \
+             patch.object(manager, "start", return_value=321) as start:
+            response = self.client.post(
+                "/api/jobs", json={"engine": "pi", "question_id": "cup", "gateway_ids": [site_id]},
+            )
+            invalid = self.client.post(
+                "/api/jobs", json={"engine": "pi", "question_id": "missing", "gateway_ids": [site_id]},
+            )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(start.call_args.args[1:4], ("parallel", 2, "medium"))
+        self.assertEqual(start.call_args.args[-1], "cup")
+        self.assertEqual((invalid.status_code, invalid.get_json()["error"]["code"]), (400, "INVALID_QUESTION"))
+
     def test_proxy_api_validates_and_passes_snapshot_to_new_job(self):
         self.assertEqual(
             self.client.get("/api/settings/proxy").get_json()["proxy"],
@@ -990,7 +1039,8 @@ class ApiTests(unittest.TestCase):
              patch.object(manager, "start", return_value=123) as start:
             response = self.client.post("/api/jobs", json={"engine": "pi", "gateway_ids": [site_id]})
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(start.call_args.args[-1], PROXY)
+        self.assertEqual(start.call_args.args[1:4], ("parallel", 5, "low"))
+        self.assertEqual(start.call_args.args[-2:], (PROXY, "candy"))
 
     def test_gateway_history_can_be_deleted_independently(self):
         first_id = self.add_site()
