@@ -21,7 +21,7 @@ from itertools import product
 from pathlib import Path
 from unittest.mock import patch
 
-from candytest import candy_prompt, random_candy_prompt
+from candytest import PROMPT_TEMPLATES, candy_prompt, random_candy_prompt
 from candytest import cli
 from candytest.jobs import JobManager
 from candytest.cli import InvocationCancelled
@@ -80,6 +80,21 @@ class CliParsingAndIsolationTests(unittest.TestCase):
         for explicit_hint in ("类别只能在取出后确认", "可据此决定", "两种形态各取多少件"):
             self.assertNotIn(explicit_hint, prompt)
 
+    def test_all_prompt_templates_preserve_semantics_and_hidden_clue(self):
+        for template in PROMPT_TEMPLATES:
+            with self.subTest(template=template[:20]):
+                prompt, expected = candy_prompt((1, 2, 3, 4, 5, 6), template=template)
+                self.assertEqual(expected, 13)
+                self.assertTrue(any(clue in prompt for clue in ("手感", "触感", "摸起来")))
+                for term in ("ITEM", "ALFA", "BRAV", "CHAR", "FORM", "MODE"):
+                    self.assertIn(term, prompt)
+                for number in range(1, 7):
+                    self.assertIn(str(number), prompt)
+                for explicit_hint in ("类别只能在取出后确认", "可据此决定", "两种形态各取多少件"):
+                    self.assertNotIn(explicit_hint, prompt)
+                for keyword in ("糖果", "苹果", "桃子", "草莓", "西瓜", "圆形", "五角星"):
+                    self.assertNotIn(keyword, prompt)
+
     def test_dynamic_answer_formula_matches_small_brute_force(self):
         for counts in product((1, 2), repeat=6):
             round_apple, round_peach, round_watermelon, star_apple, star_peach, star_watermelon = counts
@@ -97,9 +112,11 @@ class CliParsingAndIsolationTests(unittest.TestCase):
     def test_random_prompt_replaces_keywords_and_draws_six_counts(self):
         letters = list("ABCDEFGHIJKLMNOPQRSTUVWX")
         with patch("candytest.random.sample", return_value=letters) as sample, \
-             patch("candytest.random.randint", side_effect=(1, 2, 3, 4, 5, 6)) as randint:
+             patch("candytest.random.randint", side_effect=(1, 2, 3, 4, 5, 6)) as randint, \
+             patch("candytest.random.choice", return_value=PROMPT_TEMPLATES[2]) as choice:
             prompt, expected = random_candy_prompt()
         sample.assert_called_once_with("ABCDEFGHIJKLMNOPQRSTUVWXYZ", 24)
+        choice.assert_called_once_with(PROMPT_TEMPLATES)
         self.assertEqual([item.args for item in randint.call_args_list], [(1, 20)] * 6)
         self.assertEqual(expected, 13)
         for term in ("ABCD", "EFGH", "IJKL", "MNOP", "QRST", "UVWX"):
@@ -266,7 +283,7 @@ class CliParsingAndIsolationTests(unittest.TestCase):
                 "sys.stdin.reconfigure(encoding='utf-8', errors='replace')\n"
                 "sys.stdout.reconfigure(encoding='utf-8', errors='replace')\n"
                 "prompt = sys.stdin.read()\n"
-                "if '不使用任何外部工具' not in prompt: raise SystemExit(2)\n"
+                "if not prompt.strip(): raise SystemExit(2)\n"
                 "if not os.environ.get('CANDYTEST_GATEWAY_API_KEY'): raise SystemExit(3)\n"
                 "if os.environ.get('PI_CODING_AGENT_DIR'):\n"
                 " print(json.dumps({'type':'message_end','message':{'role':'assistant','content':[{'type':'text','text':'最终答案 21'}],'usage':{'input':5,'output':2,'totalTokens':7}}}, ensure_ascii=False))\n"
