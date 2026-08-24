@@ -417,6 +417,8 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn("今日正确率", source)
         self.assertIn("今日：正确", source)
         self.assertIn("历史：正确", source)
+        self.assertNotIn("今日：正确 ${site.today_correct || 0} / 已判分 ${site.today_graded || 0} · API 错误", source)
+        self.assertNotIn("历史：正确 ${site.correct || 0} / 已判分 ${site.graded || 0} · API 错误", source)
         self.assertIn("stat-details-stacked", source)
         self.assertNotIn("const historyLow", source)
         self.assertNotIn("if (historyLow)", source)
@@ -482,7 +484,7 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertNotIn('id="webdavForm"', template)
         self.assertNotIn('id="proxyForm"', template)
         self.assertNotIn("不计正确率", template)
-        self.assertIn("API 错误会保存记录", template)
+        self.assertIn("API 错误仅显示在当前任务", template)
         style = (Path(__file__).parents[1] / "candytest/static/style.css").read_text(encoding="utf-8")
         self.assertIn(".stat-grid{display:grid;grid-template-columns:1fr", style)
         self.assertIn(".stat-details", style)
@@ -676,7 +678,7 @@ class StorageTests(unittest.TestCase):
         )
         self.assertEqual(history["runs"][0]["gateway_name"], "新名称")
 
-    def test_history_groups_by_gateway_and_excludes_errors_from_denominator(self):
+    def test_history_excludes_api_errors(self):
         site = self.create_site()
         job_id = self.db.create_job(job_payload())
         self.db.add_run(run_payload(job_id, correct=1))
@@ -687,10 +689,11 @@ class StorageTests(unittest.TestCase):
         aggregate = history["gateways"][0]
         self.assertEqual(
             (aggregate["graded"], aggregate["correct"], aggregate["errors"], aggregate["cancelled"]),
-            (2, 1, 1, 1),
+            (2, 1, 0, 1),
         )
         self.assertEqual(aggregate["accuracy"], 50.0)
-        self.assertEqual(len(history["runs"]), 4)
+        self.assertEqual(len(history["runs"]), 3)
+        self.assertNotIn("error", {run["status"] for run in history["runs"]})
 
     def test_history_includes_today_accuracy_using_utc_calendar_day(self):
         self.create_site()
@@ -721,8 +724,8 @@ class StorageTests(unittest.TestCase):
             (aggregate["today_graded"], aggregate["today_correct"], aggregate["today_accuracy"]),
             (2, 1, 50.0),
         )
-        self.assertEqual((aggregate["errors"], aggregate["cancelled"]), (1, 1))
-        self.assertEqual((aggregate["today_errors"], aggregate["today_cancelled"]), (1, 1))
+        self.assertEqual((aggregate["errors"], aggregate["cancelled"]), (0, 1))
+        self.assertEqual((aggregate["today_errors"], aggregate["today_cancelled"]), (0, 1))
 
         current = self.db.job(job_id)["gateways"][0]
         self.assertEqual(
@@ -732,8 +735,9 @@ class StorageTests(unittest.TestCase):
         )
         self.assertEqual(
             (current["historical_today_errors"], current["historical_today_cancelled"]),
-            (1, 1),
+            (0, 1),
         )
+        self.assertEqual(current["errors"], 1)
 
     def test_error_classifier_identifies_gateway_outages_but_not_auth_or_rate_limits(self):
         self.assertEqual(classify_error("HTTP 503 Service Unavailable"), "gateway_unavailable")
@@ -741,7 +745,7 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(classify_error("HTTP 401 from upstream"), "api_failure")
         self.assertEqual(classify_error("HTTP 429: Gateway Timeout"), "api_failure")
 
-    def test_job_and_history_runs_derive_error_kind_without_schema_change(self):
+    def test_only_current_job_runs_derive_error_kind(self):
         self.create_site()
         job_id = self.db.create_job(job_payload())
         self.db.add_run(run_payload(job_id, correct=1))
@@ -753,8 +757,9 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(current["runs"][0]["error_kind"], None)
         self.assertEqual(current["runs"][1]["error_kind"], "gateway_unavailable")
         history = self.db.history()
-        kinds = {run["status"]: run["error_kind"] for run in history["runs"]}
-        self.assertEqual(kinds, {"graded": None, "error": "gateway_unavailable"})
+        self.assertEqual([(run["status"], run["error_kind"]) for run in history["runs"]], [
+            ("graded", None),
+        ])
 
     def test_accuracy_threshold_is_low_below_80_and_not_at_80(self):
         site = self.create_site()
@@ -997,11 +1002,8 @@ class SchedulingTests(unittest.TestCase):
         self.assertEqual(stored["gateways"][0]["graded"], 0)
         self.assertIsNone(stored["gateways"][0]["accuracy"])
         history = self.db.history()
-        self.assertEqual(len(history["runs"]), 1)
-        self.assertEqual(history["runs"][0]["status"], "error")
-        self.assertEqual(history["gateways"][0]["errors"], 1)
-        self.assertEqual(history["gateways"][0]["graded"], 0)
-        self.assertIsNone(history["gateways"][0]["accuracy"])
+        self.assertEqual(history["runs"], [])
+        self.assertEqual(history["gateways"], [])
 
     def test_cancel_stops_active_call_and_future_rounds(self):
         entered = threading.Event()

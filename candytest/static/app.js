@@ -257,11 +257,11 @@
     const statDetails = node("div", undefined, `stat-details${historical ? " stat-details-stacked" : ""}`);
     if (!historical) statDetails.append(node("p", `进度 ${site.completed || 0} / ${rounds ?? "—"}`));
     if (historical) {
-      statDetails.append(node("p", `今日：正确 ${site.today_correct || 0} / 已判分 ${site.today_graded || 0} · API 错误 ${site.today_errors || 0} · 中断 ${site.today_cancelled || 0}`));
-      statDetails.append(node("p", `历史：正确 ${site.correct || 0} / 已判分 ${site.graded || 0} · API 错误 ${site.errors || 0} · 中断 ${site.cancelled || 0}`));
+      statDetails.append(node("p", `今日：正确 ${site.today_correct || 0} / 已判分 ${site.today_graded || 0} · 中断 ${site.today_cancelled || 0}`));
+      statDetails.append(node("p", `历史：正确 ${site.correct || 0} / 已判分 ${site.graded || 0} · 中断 ${site.cancelled || 0}`));
     } else {
       statDetails.append(node("p", `本任务：正确 ${site.correct || 0} / 已判分 ${site.graded || 0} · API 错误 ${site.errors || 0} · 中断 ${site.cancelled || 0}`));
-      statDetails.append(node("p", `历史：${pct(site.historical_accuracy)}（${site.historical_correct || 0} / ${site.historical_graded || 0} · API 错误 ${site.historical_errors || 0} · 中断 ${site.historical_cancelled || 0}）`));
+      statDetails.append(node("p", `历史：${pct(site.historical_accuracy)}（${site.historical_correct || 0} / ${site.historical_graded || 0} · 中断 ${site.historical_cancelled || 0}）`));
     }
     div.append(statDetails);
     const alerts = node("div", undefined, "stat-alerts");
@@ -293,7 +293,7 @@
       state.currentJob = null;
       state.currentJobId = null;
       state.selectedGatewayIds.clear();
-      $("#jobCaption").textContent = "尚未运行测试。API 错误会保存记录。";
+      $("#jobCaption").textContent = "尚未运行测试。API 错误仅显示在当前任务。";
       $("#jobSummary").textContent = "—";
       clear($("#jobStats"));
       const td = node("td", "暂无测试记录", "empty"); td.colSpan = 9;

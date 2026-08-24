@@ -534,7 +534,7 @@ class Database:
                 SUM(CASE WHEN status = 'graded' AND is_correct = 1 AND created_at >= ? AND created_at < ? THEN 1 ELSE 0 END) today_correct,
                 SUM(CASE WHEN status = 'error' AND created_at >= ? AND created_at < ? THEN 1 ELSE 0 END) today_errors,
                 SUM(CASE WHEN status = 'cancelled' AND created_at >= ? AND created_at < ? THEN 1 ELSE 0 END) today_cancelled
-                FROM test_runs GROUP BY gateway_id""", (
+                FROM test_runs WHERE status != 'error' GROUP BY gateway_id""", (
                     today_start, tomorrow_start, today_start, tomorrow_start,
                     today_start, tomorrow_start, today_start, tomorrow_start
                 )).fetchall()
@@ -631,12 +631,13 @@ class Database:
                 SUM(CASE WHEN status = 'graded' AND is_correct = 1 AND created_at >= ? AND created_at < ? THEN 1 ELSE 0 END) today_correct,
                 SUM(CASE WHEN status = 'error' AND created_at >= ? AND created_at < ? THEN 1 ELSE 0 END) today_errors,
                 SUM(CASE WHEN status = 'cancelled' AND created_at >= ? AND created_at < ? THEN 1 ELSE 0 END) today_cancelled
-                FROM test_runs GROUP BY gateway_id ORDER BY gateway_name COLLATE NOCASE""", (
+                FROM test_runs WHERE status != 'error'
+                GROUP BY gateway_id ORDER BY gateway_name COLLATE NOCASE""", (
                     today_start, tomorrow_start, today_start, tomorrow_start,
                     today_start, tomorrow_start, today_start, tomorrow_start
                 )).fetchall()
             recent = conn.execute("""SELECT r.*, j.engine FROM test_runs r JOIN test_jobs j ON j.id=r.job_id
-                                  ORDER BY r.id DESC LIMIT 100""").fetchall()
+                                  WHERE r.status != 'error' ORDER BY r.id DESC LIMIT 100""").fetchall()
             gateway_metadata = {
                 row["id"]: dict(row)
                 for row in conn.execute("SELECT id,name,multiplier FROM gateways").fetchall()
