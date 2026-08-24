@@ -124,5 +124,5 @@ PROMPT = random_candy_prompt(False)[0]
 
 PI_EFFORTS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
 CODEX_EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
-DEFAULT_TIMEOUT_SECONDS = 300
+DEFAULT_TIMEOUT_SECONDS = 600
 MAX_ROUNDS = 100

@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 
 from .auth import AuthStateError, ServerAuthStore
-from . import CODEX_EFFORTS, MAX_ROUNDS, PI_EFFORTS, QUESTION_DEFAULTS, QUESTION_NAMES
+from . import CODEX_EFFORTS, DEFAULT_TIMEOUT_SECONDS, MAX_ROUNDS, PI_EFFORTS, QUESTION_DEFAULTS, QUESTION_NAMES
 from .cli import cli_availability
 from .jobs import JobManager
 from .storage import Database, default_data_dir
@@ -415,7 +415,7 @@ def create_app(data_dir: Path | None = None) -> Flask:
     def runtime():
         return jsonify({"engines": cli_availability(), "deployment": deployment,
                        "defaults": {"rounds": 5, "reasoning_effort": "low",
-                       "mode": "parallel", "timeout_seconds": 300}, "data_dir": str(db.data_dir)})
+                       "mode": "parallel", "timeout_seconds": DEFAULT_TIMEOUT_SECONDS}, "data_dir": str(db.data_dir)})
 
     if deployment == "server":
         @app.get("/api/settings/account")

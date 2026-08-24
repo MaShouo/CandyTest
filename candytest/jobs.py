@@ -9,8 +9,6 @@ from . import DEFAULT_TIMEOUT_SECONDS, question_prompt, random_candy_prompts
 from .cli import InvocationCancelled, answer_is_correct, invoke
 from .storage import Database, utcnow
 
-QUESTION_TIMEOUTS = {"probability": 240, "dag10": 240}
-
 
 class JobManager:
     """One process-local scheduler: sites may overlap, rounds within a site may not."""
@@ -91,7 +89,7 @@ class JobManager:
                 random_candy_prompts(rounds, random_candy_format) if question_id == "candy"
                 else [question_prompt(question_id) for _ in range(rounds)]
             )
-            timeout = QUESTION_TIMEOUTS.get(question_id, DEFAULT_TIMEOUT_SECONDS)
+            timeout = DEFAULT_TIMEOUT_SECONDS
             if mode == "parallel":
                 with ThreadPoolExecutor(max_workers=len(gateways), thread_name_prefix="candytest") as pool:
                     futures = [

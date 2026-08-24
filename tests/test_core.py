@@ -943,7 +943,7 @@ class SchedulingTests(unittest.TestCase):
         self.assertEqual(prompts, [CUP_PROMPT] * 4)
         self.assertEqual(self.db.job(job_id)["summary"]["correct"], 4)
 
-    def test_new_question_runs_with_four_minute_timeout(self):
+    def test_api_calls_use_ten_minute_timeout(self):
         timeouts: list[int] = []
 
         def fake_invoke(_engine, _site, _model, _effort, timeout, _cancel_event, _proxy_url, _prompt):
@@ -956,7 +956,7 @@ class SchedulingTests(unittest.TestCase):
                 job_id, "pi", "serial", 1, "medium", None, self.sites,
                 question_id="dag10",
             )
-        self.assertEqual(timeouts, [240, 240])
+        self.assertEqual(timeouts, [600, 600])
         self.assertEqual(self.db.job(job_id)["summary"]["correct"], 2)
 
     def test_parallel_mode_overlaps_sites_but_never_rounds_of_one_site(self):
