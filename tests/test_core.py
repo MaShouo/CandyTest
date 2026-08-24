@@ -75,7 +75,10 @@ def run_payload(job_id: int, *, gateway_id: int = 1, name: str = "站点 A",
 class CliParsingAndIsolationTests(unittest.TestCase):
     def test_dynamic_prompt_computes_expected_answer(self):
         prompt, expected = candy_prompt((7, 9, 8, 7, 6, 4))
-        self.assertEqual(expected, 21)
+        self.assertEqual(expected, "21")
+        self.assertIn("最后一行必须严格写成 FINAL: <整数>。", prompt)
+        self.assertFalse(cli.answer_is_correct("中间计算得到 21\nFINAL: 22", expected))
+        self.assertTrue(cli.answer_is_correct("推理完成\nFINAL: 21", expected))
         for term in ("ITEM", "ALFA", "BRAV", "CHAR", "FORM", "MODE"):
             self.assertIn(term, prompt)
         self.assertIn("不同形态靠手感可以分辨", prompt)
@@ -87,7 +90,7 @@ class CliParsingAndIsolationTests(unittest.TestCase):
         for template in PROMPT_TEMPLATES:
             with self.subTest(template=template[:20]):
                 prompt, expected = candy_prompt((1, 2, 3, 4, 5, 6), template=template)
-                self.assertEqual(expected, 13)
+                self.assertEqual(expected, "13")
                 self.assertTrue(any(clue in prompt for clue in ("手感", "触感", "摸起来")))
                 for term in ("ITEM", "ALFA", "BRAV", "CHAR", "FORM", "MODE"):
                     self.assertIn(term, prompt)
@@ -122,7 +125,7 @@ class CliParsingAndIsolationTests(unittest.TestCase):
                 and (circles > round_peach + round_watermelon or stars > star_peach + star_watermelon)
                 and (circles > round_apple + round_watermelon or stars > star_apple + star_watermelon)
             ]
-            self.assertEqual(candy_prompt(counts)[1], min(possible))
+            self.assertEqual(candy_prompt(counts)[1], str(min(possible)))
 
     def test_random_prompt_replaces_keywords_and_draws_six_counts(self):
         letters = list("ABCDEFGHIJKLMNOPQRSTUVWX")
@@ -133,7 +136,7 @@ class CliParsingAndIsolationTests(unittest.TestCase):
         sample.assert_called_once_with("ABCDEFGHIJKLMNOPQRSTUVWXYZ", 24)
         choice.assert_called_once_with(PROMPT_TEMPLATES)
         self.assertEqual([item.args for item in randint.call_args_list], [(1, 20)] * 6)
-        self.assertEqual(expected, 13)
+        self.assertEqual(expected, "13")
         for term in ("ABCD", "EFGH", "IJKL", "MNOP", "QRST", "UVWX"):
             self.assertIn(term, prompt)
         for keyword in ("糖果", "苹果", "桃子", "草莓", "西瓜", "圆形", "五角星"):
@@ -150,7 +153,7 @@ class CliParsingAndIsolationTests(unittest.TestCase):
         self.assertEqual(len(randint.call_args_list), 6)
         self.assertEqual(questions[0], questions[1])
         prompt, expected = questions[0]
-        self.assertEqual(expected, 13)
+        self.assertEqual(expected, "13")
         for term in ("ABCD", "EFGH", "IJKL", "MNOP", "QRST", "UVWX"):
             self.assertIn(term, prompt)
         self.assertIn("一只遮光袋内装有", prompt)
@@ -166,7 +169,7 @@ class CliParsingAndIsolationTests(unittest.TestCase):
         self.assertEqual(len(randint.call_args_list), 6)
         choice.assert_not_called()
         self.assertEqual(questions, [questions[0]] * 3)
-        self.assertEqual(questions[0][1], 21)
+        self.assertEqual(questions[0][1], "21")
         self.assertEqual(
             questions[0][0],
             candy_prompt((7, 9, 8, 7, 6, 4),

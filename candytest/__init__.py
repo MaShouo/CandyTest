@@ -76,7 +76,7 @@ DEFAULT_TERMS = ("ITEM", "ALFA", "BRAV", "CHAR", "FORM", "MODE")
 
 
 def candy_prompt(counts: tuple[int, ...], terms: tuple[str, ...] = DEFAULT_TERMS,
-                 template: str = PROMPT_TEMPLATES[0]) -> tuple[str, int]:
+                 template: str = PROMPT_TEMPLATES[0]) -> tuple[str, str]:
     """Build one question and its minimum guaranteed draw count."""
     shape_a_first, shape_a_second, shape_a_other, shape_b_first, shape_b_second, shape_b_other = counts
     expected = min(
@@ -86,13 +86,14 @@ def candy_prompt(counts: tuple[int, ...], terms: tuple[str, ...] = DEFAULT_TERMS
         shape_a_other + shape_b_other + max(shape_b_first, shape_b_second) + 2,
     )
     item, first, second, other, shape_a, shape_b = terms
-    return template.format(
+    prompt = template.format(
         *counts, item=item, first=first, second=second, other=other,
         shape_a=shape_a, shape_b=shape_b,
-    ), expected
+    )
+    return f"{prompt}最后一行必须严格写成 FINAL: <整数>。\n", str(expected)
 
 
-def random_candy_prompts(rounds: int, random_format: bool = False) -> list[tuple[str, int]]:
+def random_candy_prompts(rounds: int, random_format: bool = False) -> list[tuple[str, str]]:
     letters = random.sample(string.ascii_uppercase, 24)
     terms = tuple("".join(letters[index:index + 4]) for index in range(0, 24, 4))
     question = candy_prompt(
@@ -102,7 +103,7 @@ def random_candy_prompts(rounds: int, random_format: bool = False) -> list[tuple
     return [question] * rounds
 
 
-def random_candy_prompt(random_format: bool = True) -> tuple[str, int]:
+def random_candy_prompt(random_format: bool = True) -> tuple[str, str]:
     return random_candy_prompts(1, random_format)[0]
 
 
