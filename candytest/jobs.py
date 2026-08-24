@@ -41,7 +41,7 @@ class JobManager:
     def start(self, engine: str, mode: str, rounds: int, effort: str,
               model_override: str | None, gateways: list[dict[str, Any]],
               proxy_url: str | None = None, question_id: str = "candy",
-              random_candy_format: bool = True) -> int:
+              random_candy_format: bool = False) -> int:
         with self._lock:
             if self._sync_reserved:
                 raise RuntimeError("WebDAV 同步进行中，暂时不能启动测试")
@@ -79,7 +79,7 @@ class JobManager:
                  model_override: str | None, gateways: list[dict[str, Any]],
                  cancel_event: threading.Event | None = None,
                  proxy_url: str | None = None, question_id: str = "candy",
-                 random_candy_format: bool = True) -> None:
+                 random_candy_format: bool = False) -> None:
         # A default keeps direct unit-level calls backwards compatible.
         cancel_event = cancel_event or threading.Event()
         with self._lock:

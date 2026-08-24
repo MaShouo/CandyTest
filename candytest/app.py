@@ -628,7 +628,7 @@ def create_app(data_dir: Path | None = None) -> Flask:
         question_id = data.get("question_id", "candy")
         if not isinstance(question_id, str) or question_id not in QUESTION_NAMES:
             return api_error("INVALID_QUESTION", "请选择有效题目")
-        random_candy_format = data.get("random_candy_format", True)
+        random_candy_format = data.get("random_candy_format", False)
         if not isinstance(random_candy_format, bool):
             return api_error("INVALID_RANDOM_FORMAT", "随机题目格式开关必须为布尔值")
         default_rounds, default_effort = QUESTION_DEFAULTS[question_id]

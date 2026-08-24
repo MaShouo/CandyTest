@@ -139,36 +139,36 @@ class CliParsingAndIsolationTests(unittest.TestCase):
         for keyword in ("糖果", "苹果", "桃子", "草莓", "西瓜", "圆形", "五角星"):
             self.assertNotIn(keyword, prompt)
 
-    def test_random_rounds_share_template_and_keywords(self):
+    def test_random_rounds_share_template_keywords_and_counts(self):
         letters = list("ABCDEFGHIJKLMNOPQRSTUVWX")
         with patch("candytest.random.sample", return_value=letters) as sample, \
              patch("candytest.random.choice", return_value=PROMPT_TEMPLATES[2]) as choice, \
-             patch("candytest.random.randint", side_effect=range(1, 13)):
-            questions = random_candy_prompts(2)
+             patch("candytest.random.randint", side_effect=range(1, 7)) as randint:
+            questions = random_candy_prompts(2, True)
         sample.assert_called_once_with("ABCDEFGHIJKLMNOPQRSTUVWXYZ", 24)
         choice.assert_called_once_with(PROMPT_TEMPLATES)
-        self.assertNotEqual(questions[0], questions[1])
-        for prompt, _expected in questions:
-            for term in ("ABCD", "EFGH", "IJKL", "MNOP", "QRST", "UVWX"):
-                self.assertIn(term, prompt)
-            self.assertIn("一只遮光袋内装有", prompt)
-        first, second = (prompt for prompt, _expected in questions)
+        self.assertEqual(len(randint.call_args_list), 6)
+        self.assertEqual(questions[0], questions[1])
+        prompt, expected = questions[0]
+        self.assertEqual(expected, 13)
+        for term in ("ABCD", "EFGH", "IJKL", "MNOP", "QRST", "UVWX"):
+            self.assertIn(term, prompt)
+        self.assertIn("一只遮光袋内装有", prompt)
         for number in range(1, 7):
-            self.assertIn(f"{number:2}", first)
-        for number in range(7, 13):
-            self.assertIn(f"{number:2}", second)
+            self.assertIn(f"{number:2}", prompt)
 
-    def test_nonrandom_format_keeps_original_prompt_and_counts(self):
+    def test_original_format_randomizes_data_once_and_keeps_first_template(self):
         letters = list("ABCDEFGHIJKLMNOPQRSTUVWX")
         with patch("candytest.random.sample", return_value=letters), \
-             patch("candytest.random.randint") as randint, \
+             patch("candytest.random.randint", side_effect=(7, 9, 8, 7, 6, 4)) as randint, \
              patch("candytest.random.choice") as choice:
-            prompt, expected = question_prompt("candy", False)
-        randint.assert_not_called()
+            questions = random_candy_prompts(3, False)
+        self.assertEqual(len(randint.call_args_list), 6)
         choice.assert_not_called()
-        self.assertEqual(expected, 21)
+        self.assertEqual(questions, [questions[0]] * 3)
+        self.assertEqual(questions[0][1], 21)
         self.assertEqual(
-            prompt,
+            questions[0][0],
             candy_prompt((7, 9, 8, 7, 6, 4),
                          ("ABCD", "EFGH", "IJKL", "MNOP", "QRST", "UVWX"),
                          PROMPT_TEMPLATES[0])[0],
@@ -463,8 +463,8 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn('<option value="dag10">任务排序题</option>', template)
         self.assertIn('id="randomCandyFormat"', template)
         self.assertIn('name="random_candy_format"', template)
-        self.assertIn('<option value="true">随机格式（默认）</option>', template)
-        self.assertIn('<option value="false">原题格式</option>', template)
+        self.assertIn('<option value="false">原题格式（默认）</option>', template)
+        self.assertIn('<option value="true">随机格式</option>', template)
         self.assertIn(">糖果题格式<select", template)
         self.assertIn('id="rounds"', template)
         self.assertIn('id="selectAllGateways"', template)
@@ -890,17 +890,17 @@ class SchedulingTests(unittest.TestCase):
             events.append(site["name"])
             proxies.append(proxy_url)
             prompts.append(prompt)
-            return {"answer": "答案 21" if "题目一" in prompt else "答案 29", "elapsed_seconds": 0.0}
+            return {"answer": "答案 21", "elapsed_seconds": 0.0}
 
         job_id = self.make_job("serial", 2)
-        questions = [("同结构关键词，题目一", 21), ("同结构关键词，题目二", 29)]
+        questions = [("同结构关键词和数值", 21)] * 2
         with patch("candytest.jobs.random_candy_prompts", return_value=questions) as generate, \
              patch("candytest.jobs.invoke", side_effect=fake_invoke):
             self.manager._run_job(job_id, "pi", "serial", 2, "medium", None, self.sites, proxy_url=PROXY)
-        generate.assert_called_once_with(2, True)
+        generate.assert_called_once_with(2, False)
         self.assertEqual(events, ["A", "A", "B", "B"])
         self.assertEqual(proxies, [PROXY] * 4)
-        self.assertEqual(prompts, ["同结构关键词，题目一", "同结构关键词，题目二"] * 2)
+        self.assertEqual(prompts, ["同结构关键词和数值"] * 4)
         stored_job = self.db.job(job_id)
         self.assertEqual(stored_job["status"], "completed")
         self.assertEqual(stored_job["summary"], {
@@ -1133,9 +1133,9 @@ class ApiTests(unittest.TestCase):
             [call.args[1:4] + (call.args[-1], call.kwargs["random_candy_format"])
              for call in start.call_args_list],
             [
-                ("parallel", 2, "medium", "cup", True),
-                ("parallel", 5, "medium", "probability", True),
-                ("parallel", 5, "medium", "dag10", True),
+                ("parallel", 2, "medium", "cup", False),
+                ("parallel", 5, "medium", "probability", False),
+                ("parallel", 5, "medium", "dag10", False),
                 ("parallel", 5, "low", "candy", False),
             ],
         )
