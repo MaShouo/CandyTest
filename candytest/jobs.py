@@ -5,7 +5,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from . import DEFAULT_TIMEOUT_SECONDS, question_prompt
+from . import DEFAULT_TIMEOUT_SECONDS, question_prompt, random_candy_prompts
 from .cli import InvocationCancelled, answer_is_correct, invoke
 from .storage import Database, utcnow
 
@@ -40,7 +40,8 @@ class JobManager:
 
     def start(self, engine: str, mode: str, rounds: int, effort: str,
               model_override: str | None, gateways: list[dict[str, Any]],
-              proxy_url: str | None = None, question_id: str = "candy") -> int:
+              proxy_url: str | None = None, question_id: str = "candy",
+              random_candy_format: bool = True) -> int:
         with self._lock:
             if self._sync_reserved:
                 raise RuntimeError("WebDAV 同步进行中，暂时不能启动测试")
@@ -59,7 +60,7 @@ class JobManager:
             thread = threading.Thread(
                 target=self._run_job,
                 args=(job_id, engine, mode, rounds, effort, model_override, gateways,
-                      cancel_event, proxy_url, question_id),
+                      cancel_event, proxy_url, question_id, random_candy_format),
                 daemon=True,
             )
             thread.start()
@@ -77,7 +78,8 @@ class JobManager:
     def _run_job(self, job_id: int, engine: str, mode: str, rounds: int, effort: str,
                  model_override: str | None, gateways: list[dict[str, Any]],
                  cancel_event: threading.Event | None = None,
-                 proxy_url: str | None = None, question_id: str = "candy") -> None:
+                 proxy_url: str | None = None, question_id: str = "candy",
+                 random_candy_format: bool = True) -> None:
         # A default keeps direct unit-level calls backwards compatible.
         cancel_event = cancel_event or threading.Event()
         with self._lock:
@@ -85,7 +87,10 @@ class JobManager:
         final_status = "completed"
         final_error: str | None = None
         try:
-            questions = [question_prompt(question_id) for _ in range(rounds)]
+            questions = (
+                random_candy_prompts(rounds, random_candy_format) if question_id == "candy"
+                else [question_prompt(question_id) for _ in range(rounds)]
+            )
             timeout = QUESTION_TIMEOUTS.get(question_id, DEFAULT_TIMEOUT_SECONDS)
             if mode == "parallel":
                 with ThreadPoolExecutor(max_workers=len(gateways), thread_name_prefix="candytest") as pool:

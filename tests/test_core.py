@@ -23,7 +23,7 @@ from unittest.mock import patch
 
 from candytest import (
     CUP_PROMPT, DAG_PROMPT, PROBABILITY_PROMPT, PROMPT_TEMPLATES,
-    candy_prompt, question_prompt, random_candy_prompt,
+    candy_prompt, question_prompt, random_candy_prompt, random_candy_prompts,
 )
 from candytest import cli
 from candytest.jobs import JobManager
@@ -138,6 +138,41 @@ class CliParsingAndIsolationTests(unittest.TestCase):
             self.assertIn(term, prompt)
         for keyword in ("糖果", "苹果", "桃子", "草莓", "西瓜", "圆形", "五角星"):
             self.assertNotIn(keyword, prompt)
+
+    def test_random_rounds_share_template_and_keywords(self):
+        letters = list("ABCDEFGHIJKLMNOPQRSTUVWX")
+        with patch("candytest.random.sample", return_value=letters) as sample, \
+             patch("candytest.random.choice", return_value=PROMPT_TEMPLATES[2]) as choice, \
+             patch("candytest.random.randint", side_effect=range(1, 13)):
+            questions = random_candy_prompts(2)
+        sample.assert_called_once_with("ABCDEFGHIJKLMNOPQRSTUVWXYZ", 24)
+        choice.assert_called_once_with(PROMPT_TEMPLATES)
+        self.assertNotEqual(questions[0], questions[1])
+        for prompt, _expected in questions:
+            for term in ("ABCD", "EFGH", "IJKL", "MNOP", "QRST", "UVWX"):
+                self.assertIn(term, prompt)
+            self.assertIn("一只遮光袋内装有", prompt)
+        first, second = (prompt for prompt, _expected in questions)
+        for number in range(1, 7):
+            self.assertIn(f"{number:2}", first)
+        for number in range(7, 13):
+            self.assertIn(f"{number:2}", second)
+
+    def test_nonrandom_format_keeps_original_prompt_and_counts(self):
+        letters = list("ABCDEFGHIJKLMNOPQRSTUVWX")
+        with patch("candytest.random.sample", return_value=letters), \
+             patch("candytest.random.randint") as randint, \
+             patch("candytest.random.choice") as choice:
+            prompt, expected = question_prompt("candy", False)
+        randint.assert_not_called()
+        choice.assert_not_called()
+        self.assertEqual(expected, 21)
+        self.assertEqual(
+            prompt,
+            candy_prompt((7, 9, 8, 7, 6, 4),
+                         ("ABCD", "EFGH", "IJKL", "MNOP", "QRST", "UVWX"),
+                         PROMPT_TEMPLATES[0])[0],
+        )
 
     def test_grading_matches_expected_integer_anywhere(self):
         self.assertTrue(cli.answer_is_correct("结果为 21。", 21))
@@ -415,6 +450,8 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn('probability: { rounds: 5, effort: "medium" }', source)
         self.assertIn('dag10: { rounds: 5, effort: "medium" }', source)
         self.assertIn('question_id: f.question_id.value', source)
+        self.assertIn('random_candy_format: f.random_candy_format.value === "true"', source)
+        self.assertIn('$("#randomCandyFormat").style.display = $("#question").value === "candy" ? "" : "none"', source)
         self.assertIn('$("#question").onchange = setQuestionDefaults', source)
         self.assertIn('e.code !== "WEBDAV_CONFLICT"', source)
         self.assertIn("Pull 不会备份", source)
@@ -424,6 +461,11 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn('<option value="cup">水杯题</option>', template)
         self.assertIn('<option value="probability">骰子概率题</option>', template)
         self.assertIn('<option value="dag10">任务排序题</option>', template)
+        self.assertIn('id="randomCandyFormat"', template)
+        self.assertIn('name="random_candy_format"', template)
+        self.assertIn('<option value="true">随机格式（默认）</option>', template)
+        self.assertIn('<option value="false">原题格式</option>', template)
+        self.assertIn(">糖果题格式<select", template)
         self.assertIn('id="rounds"', template)
         self.assertIn('id="selectAllGateways"', template)
         self.assertIn("正确/总次数", template)
@@ -848,15 +890,17 @@ class SchedulingTests(unittest.TestCase):
             events.append(site["name"])
             proxies.append(proxy_url)
             prompts.append(prompt)
-            return {"answer": "答案 21" if prompt == "题目一" else "答案 29", "elapsed_seconds": 0.0}
+            return {"answer": "答案 21" if "题目一" in prompt else "答案 29", "elapsed_seconds": 0.0}
 
         job_id = self.make_job("serial", 2)
-        with patch("candytest.jobs.question_prompt", side_effect=[("题目一", 21), ("题目二", 29)]), \
+        questions = [("同结构关键词，题目一", 21), ("同结构关键词，题目二", 29)]
+        with patch("candytest.jobs.random_candy_prompts", return_value=questions) as generate, \
              patch("candytest.jobs.invoke", side_effect=fake_invoke):
             self.manager._run_job(job_id, "pi", "serial", 2, "medium", None, self.sites, proxy_url=PROXY)
+        generate.assert_called_once_with(2, True)
         self.assertEqual(events, ["A", "A", "B", "B"])
         self.assertEqual(proxies, [PROXY] * 4)
-        self.assertEqual(prompts, ["题目一", "题目二", "题目一", "题目二"])
+        self.assertEqual(prompts, ["同结构关键词，题目一", "同结构关键词，题目二"] * 2)
         stored_job = self.db.job(job_id)
         self.assertEqual(stored_job["status"], "completed")
         self.assertEqual(stored_job["summary"], {
@@ -864,6 +908,16 @@ class SchedulingTests(unittest.TestCase):
             "incorrect": 0, "errors": 0, "cancelled": 0, "accuracy": 100.0,
         })
         self.assertEqual(stored_job["gateways"][0]["historical_accuracy"], 100.0)
+
+    def test_fixed_candy_format_reaches_question_generator(self):
+        job_id = self.make_job("serial", 1)
+        with patch("candytest.jobs.random_candy_prompts", return_value=[("原题", 21)]) as prompts, \
+             patch("candytest.jobs.invoke", return_value={"answer": "21", "elapsed_seconds": 0.0}):
+            self.manager._run_job(
+                job_id, "pi", "serial", 1, "medium", None, self.sites,
+                random_candy_format=False,
+            )
+        prompts.assert_called_once_with(1, False)
 
     def test_cup_question_runs_selected_prompt_and_grades_eight(self):
         prompts: list[str] = []
@@ -1057,21 +1111,39 @@ class ApiTests(unittest.TestCase):
             dag = self.client.post(
                 "/api/jobs", json={"engine": "pi", "question_id": "dag10", "gateway_ids": [site_id]},
             )
+            fixed = self.client.post(
+                "/api/jobs", json={
+                    "engine": "pi", "question_id": "candy", "random_candy_format": False,
+                    "gateway_ids": [site_id],
+                },
+            )
             invalid = self.client.post(
                 "/api/jobs", json={"engine": "pi", "question_id": "missing", "gateway_ids": [site_id]},
+            )
+            invalid_toggle = self.client.post(
+                "/api/jobs", json={
+                    "engine": "pi", "random_candy_format": "false", "gateway_ids": [site_id],
+                },
             )
         self.assertEqual(response.status_code, 201)
         self.assertEqual(probability.status_code, 201)
         self.assertEqual(dag.status_code, 201)
+        self.assertEqual(fixed.status_code, 201)
         self.assertEqual(
-            [call.args[1:4] + (call.args[-1],) for call in start.call_args_list],
+            [call.args[1:4] + (call.args[-1], call.kwargs["random_candy_format"])
+             for call in start.call_args_list],
             [
-                ("parallel", 2, "medium", "cup"),
-                ("parallel", 5, "medium", "probability"),
-                ("parallel", 5, "medium", "dag10"),
+                ("parallel", 2, "medium", "cup", True),
+                ("parallel", 5, "medium", "probability", True),
+                ("parallel", 5, "medium", "dag10", True),
+                ("parallel", 5, "low", "candy", False),
             ],
         )
         self.assertEqual((invalid.status_code, invalid.get_json()["error"]["code"]), (400, "INVALID_QUESTION"))
+        self.assertEqual(
+            (invalid_toggle.status_code, invalid_toggle.get_json()["error"]["code"]),
+            (400, "INVALID_RANDOM_FORMAT"),
+        )
 
     def test_proxy_api_validates_and_passes_snapshot_to_new_job(self):
         self.assertEqual(

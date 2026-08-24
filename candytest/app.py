@@ -628,6 +628,9 @@ def create_app(data_dir: Path | None = None) -> Flask:
         question_id = data.get("question_id", "candy")
         if not isinstance(question_id, str) or question_id not in QUESTION_NAMES:
             return api_error("INVALID_QUESTION", "请选择有效题目")
+        random_candy_format = data.get("random_candy_format", True)
+        if not isinstance(random_candy_format, bool):
+            return api_error("INVALID_RANDOM_FORMAT", "随机题目格式开关必须为布尔值")
         default_rounds, default_effort = QUESTION_DEFAULTS[question_id]
         rounds = data.get("rounds", default_rounds)
         if not isinstance(rounds, int) or isinstance(rounds, bool) or not 1 <= rounds <= MAX_ROUNDS:
@@ -653,6 +656,7 @@ def create_app(data_dir: Path | None = None) -> Flask:
         try:
             job_id = manager.start(
                 engine, mode, rounds, effort, override, gateways, proxy_url, question_id,
+                random_candy_format=random_candy_format,
             )
         except RuntimeError as exc:
             return api_error("JOB_CONFLICT", str(exc), 409)

@@ -73,6 +73,7 @@ QUESTION_DEFAULTS = {
     "probability": (5, "medium"), "dag10": (5, "medium"),
 }
 DEFAULT_TERMS = ("ITEM", "ALFA", "BRAV", "CHAR", "FORM", "MODE")
+ORIGINAL_COUNTS = (7, 9, 8, 7, 6, 4)
 
 
 def candy_prompt(counts: tuple[int, ...], terms: tuple[str, ...] = DEFAULT_TERMS,
@@ -92,18 +93,26 @@ def candy_prompt(counts: tuple[int, ...], terms: tuple[str, ...] = DEFAULT_TERMS
     ), expected
 
 
-def random_candy_prompt() -> tuple[str, int]:
+def random_candy_prompts(rounds: int, random_format: bool = True) -> list[tuple[str, int]]:
     letters = random.sample(string.ascii_uppercase, 24)
     terms = tuple("".join(letters[index:index + 4]) for index in range(0, 24, 4))
-    return candy_prompt(
-        tuple(random.randint(1, 20) for _ in range(6)), terms,
-        random.choice(PROMPT_TEMPLATES),
-    )
+    template = random.choice(PROMPT_TEMPLATES) if random_format else PROMPT_TEMPLATES[0]
+    return [
+        candy_prompt(
+            tuple(random.randint(1, 20) for _ in range(6)) if random_format else ORIGINAL_COUNTS,
+            terms, template,
+        )
+        for _ in range(rounds)
+    ]
 
 
-def question_prompt(question_id: str) -> tuple[str, int | str]:
+def random_candy_prompt(random_format: bool = True) -> tuple[str, int]:
+    return random_candy_prompts(1, random_format)[0]
+
+
+def question_prompt(question_id: str, random_candy_format: bool = True) -> tuple[str, int | str]:
     if question_id == "candy":
-        return random_candy_prompt()
+        return random_candy_prompt(random_candy_format)
     if question_id == "cup":
         return CUP_PROMPT, 8
     if question_id == "probability":
