@@ -22,7 +22,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from candytest import (
-    CUP_PROMPT, DAG_PROMPT, PROBABILITY_PROMPT, PROMPT_TEMPLATES,
+    CUP_PROMPT, DAG_PROMPT, ORIGINAL_CANDY_PROMPT, PROBABILITY_PROMPT, PROMPT_TEMPLATES,
     candy_prompt, question_prompt, random_candy_prompt, random_candy_prompts,
 )
 from candytest import cli
@@ -176,6 +176,19 @@ class CliParsingAndIsolationTests(unittest.TestCase):
                          ("ABCD", "EFGH", "IJKL", "MNOP", "QRST", "UVWX"),
                          PROMPT_TEMPLATES[0])[0],
         )
+
+    def test_untouched_original_uses_no_random_replacements(self):
+        with patch("candytest.random.sample") as sample, \
+             patch("candytest.random.randint") as randint, \
+             patch("candytest.random.choice") as choice:
+            questions = random_candy_prompts(3, "original")
+        sample.assert_not_called()
+        randint.assert_not_called()
+        choice.assert_not_called()
+        expected_prompt = f"{ORIGINAL_CANDY_PROMPT}最后一行必须严格写成 FINAL: <整数>。\n"
+        self.assertEqual(questions, [(expected_prompt, "21")] * 3)
+        for original in ("糖果", "苹果味", "桃子味", "西瓜味", "圆形", "五角星形", "7", "9", "8", "6", "4"):
+            self.assertIn(original, ORIGINAL_CANDY_PROMPT)
 
     def test_grading_matches_expected_integer_anywhere(self):
         self.assertTrue(cli.answer_is_correct("结果为 21。", 21))
@@ -338,6 +351,7 @@ class CliParsingAndIsolationTests(unittest.TestCase):
         self.assertTrue(pi_model["reasoning"])
         self.assertEqual(pi_model["thinkingLevelMap"]["xhigh"], "xhigh")
         self.assertIn("override-model", captures[1][0])  # Codex --model argument
+        self.assertIn("--disable plugins", " ".join(captures[1][0]))
 
     def test_fake_executables_run_end_to_end_without_network(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -455,7 +469,7 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn('probability: { rounds: 5, effort: "medium" }', source)
         self.assertIn('dag10: { rounds: 5, effort: "medium" }', source)
         self.assertIn('question_id: f.question_id.value', source)
-        self.assertIn('random_candy_format: f.random_candy_format.value === "true"', source)
+        self.assertIn('candyFormat === "original" ? "original" : candyFormat === "true"', source)
         self.assertIn('$("#randomCandyFormat").style.display = $("#question").value === "candy" ? "" : "none"', source)
         self.assertIn('$("#question").onchange = setQuestionDefaults', source)
         self.assertIn('e.code !== "WEBDAV_CONFLICT"', source)
@@ -468,7 +482,8 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn('<option value="dag10">任务排序题</option>', template)
         self.assertIn('id="randomCandyFormat"', template)
         self.assertIn('name="random_candy_format"', template)
-        self.assertIn('<option value="false">原题格式（默认）</option>', template)
+        self.assertIn('<option value="false">原题结构（默认，随机数据）</option>', template)
+        self.assertIn('<option value="original">完全原题（不替换）</option>', template)
         self.assertIn('<option value="true">随机格式</option>', template)
         self.assertIn(">糖果题格式<select", template)
         self.assertIn('id="rounds"', template)
@@ -1122,6 +1137,12 @@ class ApiTests(unittest.TestCase):
                     "gateway_ids": [site_id],
                 },
             )
+            original = self.client.post(
+                "/api/jobs", json={
+                    "engine": "pi", "question_id": "candy", "random_candy_format": "original",
+                    "gateway_ids": [site_id],
+                },
+            )
             invalid = self.client.post(
                 "/api/jobs", json={"engine": "pi", "question_id": "missing", "gateway_ids": [site_id]},
             )
@@ -1134,6 +1155,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(probability.status_code, 201)
         self.assertEqual(dag.status_code, 201)
         self.assertEqual(fixed.status_code, 201)
+        self.assertEqual(original.status_code, 201)
         self.assertEqual(
             [call.args[1:4] + (call.args[-1], call.kwargs["random_candy_format"])
              for call in start.call_args_list],
@@ -1142,6 +1164,7 @@ class ApiTests(unittest.TestCase):
                 ("parallel", 5, "medium", "probability", False),
                 ("parallel", 5, "medium", "dag10", False),
                 ("parallel", 5, "low", "candy", False),
+                ("parallel", 5, "low", "candy", "original"),
             ],
         )
         self.assertEqual((invalid.status_code, invalid.get_json()["error"]["code"]), (400, "INVALID_QUESTION"))

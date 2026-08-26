@@ -335,7 +335,7 @@ def invoke(engine: str, gateway: dict[str, Any], model: str, effort: str,
             (codex_home / "config.toml").write_text(_codex_config(gateway["base_url"]), encoding="utf-8")
             env["CODEX_HOME"] = str(codex_home)
             command = [executable, "exec", "--json", "--skip-git-repo-check", "--ephemeral", "-s", "read-only",
-                       "--disable", "memories", "-c", "model_provider=candytest", "-c", f"model_reasoning_effort={effort}",
+                       "--disable", "memories", "--disable", "plugins", "-c", "model_provider=candytest", "-c", f"model_reasoning_effort={effort}",
                        "-m", model]
             parser = parse_codex_jsonl
         else:

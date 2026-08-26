@@ -47,6 +47,14 @@ PROMPT_TEMPLATES = (
 参加者需事先确定拿取总数。最少拿取多少件，才能保证手中有“{shape_b}-{first}”与“{shape_a}-{second}”，或有“{shape_b}-{second}”与“{shape_a}-{first}”？
 """,
 )
+ORIGINAL_CANDY_PROMPT = """不使用任何外部工具回答以下问题：
+
+在一个黑色的袋子里放有三种口味的糖果，每种糖果有两种不同的形状（圆形和五角星形，不同的形状靠手感可以分辨）。现已知不同口味的糖和不同形状的数量统计如下表。参赛者需要在活动前决定摸出的糖果数目，那么，最少取出多少个糖果才能保证手中同时拥有不同形状的苹果味和桃子味的糖？（同时手中有圆形苹果味匹配五角星桃子味糖果，或者有圆形桃子味匹配五角星苹果味糖果都满足要求）
+
+        苹果味  桃子味  西瓜味
+圆形       7      9      8
+五角星形   7      6      4
+"""
 CUP_PROMPT = """有一个水杯配对游戏。共有 4 种不同颜色的水杯，每种颜色各有两个。将同色的两个水杯分别放在上下两层，因此上下两层各有 4 个水杯。
 下层 4 个水杯按某个未知顺序排列，挑战者无法看到它们；上层水杯的颜色和位置则完全可见。游戏开始后，挑战者可以反复进行以下操作：
   1. 向裁判询问当前有多少个位置满足“上下两个水杯颜色相同”。裁判只回答匹配位置的总数，不透露具体是哪些位置。
@@ -93,7 +101,10 @@ def candy_prompt(counts: tuple[int, ...], terms: tuple[str, ...] = DEFAULT_TERMS
     return f"{prompt}最后一行必须严格写成 FINAL: <整数>。\n", str(expected)
 
 
-def random_candy_prompts(rounds: int, random_format: bool = False) -> list[tuple[str, str]]:
+def random_candy_prompts(rounds: int, random_format: bool | str = False) -> list[tuple[str, int | str]]:
+    if random_format == "original":
+        question = f"{ORIGINAL_CANDY_PROMPT}最后一行必须严格写成 FINAL: <整数>。\n", "21"
+        return [question] * rounds
     letters = random.sample(string.ascii_uppercase, 24)
     terms = tuple("".join(letters[index:index + 4]) for index in range(0, 24, 4))
     question = candy_prompt(
@@ -103,11 +114,11 @@ def random_candy_prompts(rounds: int, random_format: bool = False) -> list[tuple
     return [question] * rounds
 
 
-def random_candy_prompt(random_format: bool = True) -> tuple[str, str]:
+def random_candy_prompt(random_format: bool | str = True) -> tuple[str, int | str]:
     return random_candy_prompts(1, random_format)[0]
 
 
-def question_prompt(question_id: str, random_candy_format: bool = False) -> tuple[str, int | str]:
+def question_prompt(question_id: str, random_candy_format: bool | str = False) -> tuple[str, int | str]:
     if question_id == "candy":
         return random_candy_prompt(random_candy_format)
     if question_id == "cup":
