@@ -155,16 +155,6 @@ class JobManager:
                     "error": None, "created_at": utcnow(),
                 }
             except InvocationCancelled:
-                run = {
-                    "job_id": job_id, "gateway_id": gateway["id"],
-                    "gateway_name": gateway["name"], "round_number": number,
-                    "status": "cancelled", "answer": None, "is_correct": None,
-                    "elapsed_seconds": None, "input_tokens": None,
-                    "output_tokens": None, "reasoning_tokens": None,
-                    "total_tokens": None, "error": "用户已中断测试",
-                    "created_at": utcnow(),
-                }
-                self.db.add_run(run)
                 break
             except Exception as exc:
                 # cli.invoke already removes the supplied key from subprocess output.

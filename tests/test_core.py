@@ -434,6 +434,10 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn("今日正确率", source)
         self.assertIn("今日：正确", source)
         self.assertIn("历史：正确", source)
+        self.assertNotIn("site.cancelled", source)
+        self.assertNotIn("site.today_cancelled", source)
+        self.assertNotIn("site.historical_cancelled", source)
+        self.assertNotIn("job.summary.cancelled", source)
         self.assertNotIn("今日：正确 ${site.today_correct || 0} / 已判分 ${site.today_graded || 0} · API 错误", source)
         self.assertNotIn("历史：正确 ${site.correct || 0} / 已判分 ${site.graded || 0} · API 错误", source)
         self.assertIn("stat-details-stacked", source)
@@ -706,12 +710,13 @@ class StorageTests(unittest.TestCase):
         history = self.db.history()
         aggregate = history["gateways"][0]
         self.assertEqual(
-            (aggregate["graded"], aggregate["correct"], aggregate["errors"], aggregate["cancelled"]),
-            (2, 1, 0, 1),
+            (aggregate["graded"], aggregate["correct"], aggregate["errors"]),
+            (2, 1, 0),
         )
+        self.assertNotIn("cancelled", aggregate)
         self.assertEqual(aggregate["accuracy"], 50.0)
-        self.assertEqual(len(history["runs"]), 3)
-        self.assertNotIn("error", {run["status"] for run in history["runs"]})
+        self.assertEqual(len(history["runs"]), 2)
+        self.assertEqual({run["status"] for run in history["runs"]}, {"graded"})
 
     def test_history_includes_today_accuracy_using_utc_calendar_day(self):
         self.create_site()
@@ -742,8 +747,8 @@ class StorageTests(unittest.TestCase):
             (aggregate["today_graded"], aggregate["today_correct"], aggregate["today_accuracy"]),
             (2, 1, 50.0),
         )
-        self.assertEqual((aggregate["errors"], aggregate["cancelled"]), (0, 1))
-        self.assertEqual((aggregate["today_errors"], aggregate["today_cancelled"]), (0, 1))
+        self.assertNotIn("cancelled", aggregate)
+        self.assertNotIn("today_cancelled", aggregate)
 
         current = self.db.job(job_id)["gateways"][0]
         self.assertEqual(
@@ -751,10 +756,8 @@ class StorageTests(unittest.TestCase):
              current["historical_today_accuracy"]),
             (2, 1, 50.0),
         )
-        self.assertEqual(
-            (current["historical_today_errors"], current["historical_today_cancelled"]),
-            (0, 1),
-        )
+        self.assertNotIn("historical_cancelled", current)
+        self.assertNotIn("historical_today_cancelled", current)
         self.assertEqual(current["errors"], 1)
 
     def test_error_classifier_identifies_gateway_outages_but_not_auth_or_rate_limits(self):
@@ -928,7 +931,7 @@ class SchedulingTests(unittest.TestCase):
         self.assertEqual(stored_job["status"], "completed")
         self.assertEqual(stored_job["summary"], {
             "completed": 4, "planned": 4, "graded": 4, "correct": 4,
-            "incorrect": 0, "errors": 0, "cancelled": 0, "accuracy": 100.0,
+            "incorrect": 0, "errors": 0, "accuracy": 100.0,
         })
         self.assertEqual(stored_job["gateways"][0]["historical_accuracy"], 100.0)
 
@@ -1015,7 +1018,7 @@ class SchedulingTests(unittest.TestCase):
         self.assertIn("simulated 429", stored["runs"][0]["error"])
         self.assertEqual(stored["summary"], {
             "completed": 1, "planned": 1, "graded": 0, "correct": 0,
-            "incorrect": 0, "errors": 1, "cancelled": 0, "accuracy": None,
+            "incorrect": 0, "errors": 1, "accuracy": None,
         })
         self.assertEqual(stored["gateways"][0]["graded"], 0)
         self.assertIsNone(stored["gateways"][0]["accuracy"])
@@ -1041,10 +1044,10 @@ class SchedulingTests(unittest.TestCase):
 
         stored = self.db.job(job_id)
         self.assertEqual(stored["status"], "cancelled")
-        self.assertEqual(len(stored["runs"]), 1)
-        self.assertEqual(stored["runs"][0]["status"], "cancelled")
+        self.assertEqual(stored["runs"], [])
+        self.assertEqual(stored["summary"]["completed"], 0)
         self.assertEqual(stored["summary"]["graded"], 0)
-        self.assertEqual(stored["summary"]["cancelled"], 1)
+        self.assertNotIn("cancelled", stored["summary"])
         self.assertFalse(self.manager.cancel(job_id))
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import requests
@@ -269,6 +270,34 @@ class WebDAVSyncTests(unittest.TestCase):
             # through the deliberately nonexistent proxy).
             self.assertTrue(self.service.test_connection()["reachable"])
             self.assertTrue(all(auth and auth.startswith("Basic ") for _, _, auth in fixture.server.state.requests))
+
+    def test_read_requests_retry_transient_gateway_errors(self):
+        self.store.save(self.settings("https://cloud.example/dav"))
+        client = WebDAVClient(self.store.get())
+
+        def response(status: int, body: bytes = b"") -> requests.Response:
+            item = requests.Response()
+            item.status_code = status
+            item._content = body
+            item._content_consumed = True
+            item.raw = io.BytesIO(body)
+            item.headers["Content-Length"] = str(len(body))
+            return item
+
+        try:
+            with (
+                patch.object(
+                    client.session,
+                    "request",
+                    side_effect=[response(504), response(416), response(200, b"ok")],
+                ) as request,
+                patch("candytest.webdav_sync.time.sleep") as sleep,
+            ):
+                self.assertEqual(client.get_bytes(client.url("probe"), max_bytes=2), b"ok")
+            self.assertEqual(request.call_count, 3)
+            self.assertEqual([call.args[0] for call in sleep.call_args_list], [1, 2])
+        finally:
+            client.close()
 
     def test_connection_probe_creates_root_and_cleans_probe(self):
         with WebDAVFixture() as fixture:

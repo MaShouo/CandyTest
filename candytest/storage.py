@@ -529,14 +529,12 @@ class Database:
                 SUM(CASE WHEN status = 'graded' THEN 1 ELSE 0 END) graded,
                 SUM(CASE WHEN status = 'graded' AND is_correct = 1 THEN 1 ELSE 0 END) correct,
                 SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) errors,
-                SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) cancelled,
                 SUM(CASE WHEN status = 'graded' AND created_at >= ? AND created_at < ? THEN 1 ELSE 0 END) today_graded,
                 SUM(CASE WHEN status = 'graded' AND is_correct = 1 AND created_at >= ? AND created_at < ? THEN 1 ELSE 0 END) today_correct,
-                SUM(CASE WHEN status = 'error' AND created_at >= ? AND created_at < ? THEN 1 ELSE 0 END) today_errors,
-                SUM(CASE WHEN status = 'cancelled' AND created_at >= ? AND created_at < ? THEN 1 ELSE 0 END) today_cancelled
-                FROM test_runs WHERE status != 'error' GROUP BY gateway_id""", (
+                SUM(CASE WHEN status = 'error' AND created_at >= ? AND created_at < ? THEN 1 ELSE 0 END) today_errors
+                FROM test_runs WHERE status = 'graded' GROUP BY gateway_id""", (
                     today_start, tomorrow_start, today_start, tomorrow_start,
-                    today_start, tomorrow_start, today_start, tomorrow_start
+                    today_start, tomorrow_start
                 )).fetchall()
         import json
         snapshots = json.loads(job["gateway_snapshot"])
@@ -546,11 +544,11 @@ class Database:
                  "gateway_name": gateway_metadata.get(x["id"], {}).get("name", x["name"]),
                  "multiplier": gateway_metadata.get(x["id"], {}).get("multiplier", x.get("multiplier")),
                  "completed": 0,
-                 "correct": 0, "incorrect": 0, "errors": 0, "cancelled": 0, "graded": 0, "accuracy": None,
+                 "correct": 0, "incorrect": 0, "errors": 0, "graded": 0, "accuracy": None,
                  "historical_graded": 0, "historical_correct": 0, "historical_errors": 0,
-                 "historical_cancelled": 0, "historical_accuracy": None,
+                 "historical_accuracy": None,
                  "historical_today_graded": 0, "historical_today_correct": 0,
-                 "historical_today_errors": 0, "historical_today_cancelled": 0,
+                 "historical_today_errors": 0,
                  "historical_today_accuracy": None} for x in snapshots}
         result_runs = []
         for row in runs:
@@ -566,19 +564,18 @@ class Database:
                 "gateway_name": current_gateway["name"] if current_gateway else row["gateway_name"],
                 "multiplier": current_gateway["multiplier"] if current_gateway else None,
                 "completed": 0,
-                "correct": 0, "incorrect": 0, "errors": 0, "cancelled": 0, "graded": 0, "accuracy": None,
+                "correct": 0, "incorrect": 0, "errors": 0, "graded": 0, "accuracy": None,
                 "historical_graded": 0, "historical_correct": 0, "historical_errors": 0,
-                "historical_cancelled": 0, "historical_accuracy": None,
+                "historical_accuracy": None,
                 "historical_today_graded": 0, "historical_today_correct": 0,
-                "historical_today_errors": 0, "historical_today_cancelled": 0,
+                "historical_today_errors": 0,
                 "historical_today_accuracy": None,
             })
-            stat["completed"] += 1
             if row["status"] == "error":
+                stat["completed"] += 1
                 stat["errors"] += 1
-            elif row["status"] == "cancelled":
-                stat["cancelled"] += 1
             elif row["status"] == "graded":
+                stat["completed"] += 1
                 stat["graded"] += 1
                 if row["is_correct"]:
                     stat["correct"] += 1
@@ -591,11 +588,9 @@ class Database:
             stat["historical_graded"] = historical.get("graded", 0) or 0
             stat["historical_correct"] = historical.get("correct", 0) or 0
             stat["historical_errors"] = historical.get("errors", 0) or 0
-            stat["historical_cancelled"] = historical.get("cancelled", 0) or 0
             stat["historical_today_graded"] = historical.get("today_graded", 0) or 0
             stat["historical_today_correct"] = historical.get("today_correct", 0) or 0
             stat["historical_today_errors"] = historical.get("today_errors", 0) or 0
-            stat["historical_today_cancelled"] = historical.get("today_cancelled", 0) or 0
             if stat["historical_graded"]:
                 stat["historical_accuracy"] = round(
                     stat["historical_correct"] * 100 / stat["historical_graded"], 1
@@ -608,7 +603,6 @@ class Database:
         correct = sum(x["correct"] for x in stats.values())
         incorrect = sum(x["incorrect"] for x in stats.values())
         errors = sum(x["errors"] for x in stats.values())
-        cancelled = sum(x["cancelled"] for x in stats.values())
         completed = sum(x["completed"] for x in stats.values())
         return {"id": job["id"], "engine": job["engine"], "mode": job["mode"], "rounds": job["rounds"],
                 "reasoning_effort": job["reasoning_effort"], "model_override": job["model_override"],
@@ -616,7 +610,7 @@ class Database:
                 "error": job["error"], "gateways": list(stats.values()), "runs": result_runs,
                 "summary": {"completed": completed, "planned": job["rounds"] * len(stats),
                             "graded": graded, "correct": correct, "incorrect": incorrect,
-                            "errors": errors, "cancelled": cancelled,
+                            "errors": errors,
                             "accuracy": round(correct * 100 / graded, 1) if graded else None}}
 
     def history(self) -> dict[str, Any]:
@@ -626,18 +620,16 @@ class Database:
                 SUM(CASE WHEN status = 'graded' THEN 1 ELSE 0 END) graded,
                 SUM(CASE WHEN status = 'graded' AND is_correct = 1 THEN 1 ELSE 0 END) correct,
                 SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) errors,
-                SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) cancelled,
                 SUM(CASE WHEN status = 'graded' AND created_at >= ? AND created_at < ? THEN 1 ELSE 0 END) today_graded,
                 SUM(CASE WHEN status = 'graded' AND is_correct = 1 AND created_at >= ? AND created_at < ? THEN 1 ELSE 0 END) today_correct,
-                SUM(CASE WHEN status = 'error' AND created_at >= ? AND created_at < ? THEN 1 ELSE 0 END) today_errors,
-                SUM(CASE WHEN status = 'cancelled' AND created_at >= ? AND created_at < ? THEN 1 ELSE 0 END) today_cancelled
-                FROM test_runs WHERE status != 'error'
+                SUM(CASE WHEN status = 'error' AND created_at >= ? AND created_at < ? THEN 1 ELSE 0 END) today_errors
+                FROM test_runs WHERE status = 'graded'
                 GROUP BY gateway_id ORDER BY gateway_name COLLATE NOCASE""", (
                     today_start, tomorrow_start, today_start, tomorrow_start,
-                    today_start, tomorrow_start, today_start, tomorrow_start
+                    today_start, tomorrow_start
                 )).fetchall()
             recent = conn.execute("""SELECT r.*, j.engine FROM test_runs r JOIN test_jobs j ON j.id=r.job_id
-                                  WHERE r.status != 'error' ORDER BY r.id DESC LIMIT 100""").fetchall()
+                                  WHERE r.status = 'graded' ORDER BY r.id DESC LIMIT 100""").fetchall()
             gateway_metadata = {
                 row["id"]: dict(row)
                 for row in conn.execute("SELECT id,name,multiplier FROM gateways").fetchall()

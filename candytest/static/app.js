@@ -208,8 +208,7 @@
   }
   async function removeGatewayHistory(site, button) {
     const name = site.gateway_name || site.name;
-    const total = (site.graded || 0) + (site.errors || 0) + (site.cancelled || 0);
-    if (!confirm(`确认删除“${name}”的全部 ${total} 条历史记录？中转站配置不会删除。`)) return;
+    if (!confirm(`确认删除“${name}”的全部历史记录？中转站配置不会删除。`)) return;
     button.disabled = true;
     button.textContent = "删除中…";
     try {
@@ -257,11 +256,11 @@
     const statDetails = node("div", undefined, `stat-details${historical ? " stat-details-stacked" : ""}`);
     if (!historical) statDetails.append(node("p", `进度 ${site.completed || 0} / ${rounds ?? "—"}`));
     if (historical) {
-      statDetails.append(node("p", `今日：正确 ${site.today_correct || 0} / 已判分 ${site.today_graded || 0} · 中断 ${site.today_cancelled || 0}`));
-      statDetails.append(node("p", `历史：正确 ${site.correct || 0} / 已判分 ${site.graded || 0} · 中断 ${site.cancelled || 0}`));
+      statDetails.append(node("p", `今日：正确 ${site.today_correct || 0} / 已判分 ${site.today_graded || 0}`));
+      statDetails.append(node("p", `历史：正确 ${site.correct || 0} / 已判分 ${site.graded || 0}`));
     } else {
-      statDetails.append(node("p", `本任务：正确 ${site.correct || 0} / 已判分 ${site.graded || 0} · API 错误 ${site.errors || 0} · 中断 ${site.cancelled || 0}`));
-      statDetails.append(node("p", `历史：${pct(site.historical_accuracy)}（${site.historical_correct || 0} / ${site.historical_graded || 0} · 中断 ${site.historical_cancelled || 0}）`));
+      statDetails.append(node("p", `本任务：正确 ${site.correct || 0} / 已判分 ${site.graded || 0} · API 错误 ${site.errors || 0}`));
+      statDetails.append(node("p", `历史：${pct(site.historical_accuracy)}（${site.historical_correct || 0} / ${site.historical_graded || 0}）`));
     }
     div.append(statDetails);
     const alerts = node("div", undefined, "stat-alerts");
@@ -308,7 +307,7 @@
     for (const gatewayId of state.selectedGatewayIds) if (!validGatewayIds.has(gatewayId)) state.selectedGatewayIds.delete(gatewayId);
     state.currentJob = job;
     $("#jobCaption").textContent = `任务 #${job.id} · ${job.engine} · ${job.mode === "parallel" ? "并行" : "串行"} · 每站 ${job.rounds} 轮 · ${jobStatus(job.status)}`;
-    const summary = $("#jobSummary"); summary.textContent = `总正确率 ${pct(job.summary.accuracy)} · ${job.summary.correct}/${job.summary.graded} · API 错误 ${job.summary.errors} · 中断 ${job.summary.cancelled || 0} · 进度 ${job.summary.completed}/${job.summary.planned}`; summary.className = `metric ${job.summary.accuracy != null && job.summary.accuracy < 80 ? "low" : ""}`;
+    const summary = $("#jobSummary"); summary.textContent = `总正确率 ${pct(job.summary.accuracy)} · ${job.summary.correct}/${job.summary.graded} · API 错误 ${job.summary.errors} · 进度 ${job.summary.completed}/${job.summary.planned}`; summary.className = `metric ${job.summary.accuracy != null && job.summary.accuracy < 80 ? "low" : ""}`;
     clear($("#jobStats"), job.gateways.map(site => statCard(site, false, job.rounds, true)));
     const opened = openDetailKeys($("#runRows"));
     const visibleRuns = state.selectedGatewayIds.size === 0 ? job.runs : job.runs.filter(run => state.selectedGatewayIds.has(Number(run.gateway_id)));

@@ -13,6 +13,7 @@ import os
 import re
 import tempfile
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -31,7 +32,9 @@ MANIFEST_FILENAME = "manifest.json"
 SNAPSHOT_FILENAME = "candytest.sqlite3"
 MANIFEST_FORMAT = "candytest-sqlite-mirror"
 MANIFEST_VERSION = 1
-_REQUEST_TIMEOUT = (10, 60)  # connect, read seconds
+_REQUEST_TIMEOUT = (30, 120)  # connect, read seconds
+_READ_ATTEMPTS = 3
+_RETRYABLE_READ_STATUS = frozenset({416, 429, 502, 503, 504})
 _UUID4_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -398,15 +401,24 @@ class WebDAVClient:
 
     def _request(self, method: str, url: str, *, stream: bool = False, data: Any = None,
                  headers: dict[str, str] | None = None, allow: tuple[int, ...] = (200, 201, 204, 207)) -> requests.Response:
-        try:
-            response = self.session.request(method, url, data=data, headers=headers, stream=stream,
-                                            timeout=_REQUEST_TIMEOUT, allow_redirects=False)
-        except requests.RequestException as exc:
-            raise WebDAVRequestError(message="无法连接 WebDAV 服务") from exc
-        if response.status_code not in allow:
-            response.close()
-            raise WebDAVRequestError(response.status_code)
-        return response
+        retryable = method in {"GET", "PROPFIND"}
+        for attempt in range(_READ_ATTEMPTS):
+            try:
+                response = self.session.request(method, url, data=data, headers=headers, stream=stream,
+                                                timeout=_REQUEST_TIMEOUT, allow_redirects=False)
+            except requests.RequestException as exc:
+                if not retryable or attempt == _READ_ATTEMPTS - 1:
+                    raise WebDAVRequestError(message="无法连接 WebDAV 服务") from exc
+            else:
+                if response.status_code in allow:
+                    return response
+                status_code = response.status_code
+                response.close()
+                if (not retryable or status_code not in _RETRYABLE_READ_STATUS
+                        or attempt == _READ_ATTEMPTS - 1):
+                    raise WebDAVRequestError(status_code)
+            time.sleep(2**attempt)
+        raise AssertionError("unreachable")
 
     def propfind(self, url: str, depth: int = 0, *, missing_ok: bool = False) -> bool:
         try:
