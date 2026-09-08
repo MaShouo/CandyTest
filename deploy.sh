@@ -766,6 +766,15 @@ run_deploy() {
         return 1
     fi
 
+    info "Pulling required images."
+    if ! compose pull; then
+        if [[ "$IMAGE" == ghcr.io/* ]]; then
+            error "Pulling GHCR failed. If this is a private package, authenticate first with: docker login ghcr.io"
+        fi
+        error "No deployment changes were started; the original .env will be restored."
+        return 1
+    fi
+
     if [[ -n "$PREVIOUS_CONTAINER" ]]; then
         backup_path=$(default_backup_path)
         info "Existing CandyTest container found; backing up /data before update."
@@ -773,15 +782,6 @@ run_deploy() {
             error "Automatic data backup failed; deployment was not started."
             return 1
         fi
-    fi
-
-    info "Pulling $IMAGE."
-    if ! compose pull candytest; then
-        if [[ "$IMAGE" == ghcr.io/* ]]; then
-            error "Pulling GHCR failed. If this is a private package, authenticate first with: docker login ghcr.io"
-        fi
-        error "No deployment changes were started; the original .env will be restored."
-        return 1
     fi
 
     info "Starting CandyTest in $mode mode."

@@ -57,6 +57,17 @@ class DockerDeploymentPolicyTests(unittest.TestCase):
         self.assertIn("XDG_DATA_HOME=/tmp/candytest-home/.local/share", self.dockerfile)
         self.assertIn("mkdir -p /app /data /tmp/candytest-home", self.dockerfile)
         self.assertIn("chown -R node:node", self.dockerfile)
+        req_copy = self.dockerfile.index("COPY requirements.txt")
+        pip_install = self.dockerfile.index(
+            "/opt/venv/bin/pip install --no-cache-dir -r requirements.txt"
+        )
+        run_copy = self.dockerfile.index("COPY --chown=node:node run.py")
+        app_copy = self.dockerfile.index("COPY --chown=node:node candytest")
+        self.assertLess(req_copy, pip_install)
+        self.assertLess(pip_install, run_copy)
+        self.assertLess(run_copy, app_copy)
+        self.assertLess(app_copy, self.dockerfile.index("USER node"))
+        self.assertNotIn("chown -R node:node /app\n", self.dockerfile.replace("\r\n", "\n"))
         self.assertIn("USER node", self.dockerfile)
         self.assertIn("EXPOSE 8765", self.dockerfile)
         self.assertIn('VOLUME ["/data"]', self.dockerfile)
@@ -128,7 +139,8 @@ class DockerDeploymentPolicyTests(unittest.TestCase):
         self.assertIn('PROJECT_NAME="candytest"', self.deploy)
         self.assertIn('cd -- "$ROOT_DIR"', self.deploy)
         self.assertIn("docker compose", self.deploy)
-        self.assertIn("compose pull candytest", self.deploy)
+        self.assertIn("compose pull", self.deploy)
+        self.assertNotIn("compose pull candytest", self.deploy)
         self.assertIn("--no-build", self.deploy)
         self.assertNotIn("docker build", self.deploy.lower())
         self.assertNotRegex(self.deploy, r"docker compose[^\n]*--build(?:\s|$)")
@@ -338,7 +350,7 @@ class DeploymentScriptShimTests(unittest.TestCase):
                     if [[ "$arguments" == *" version"* ]]; then
                       exit 0
                     fi
-                    if [[ "$arguments" == *" pull candytest"* && "${FAKE_PULL_FAIL:-0}" == "1" ]]; then
+                    if [[ "$arguments" == *" pull"* && "${FAKE_PULL_FAIL:-0}" == "1" ]]; then
                       exit 1
                     fi
                     if [[ "$arguments" == *" up -d"* && "${FAKE_FIRST_UP_FAIL:-0}" == "1" ]]; then
@@ -437,6 +449,54 @@ class DeploymentScriptShimTests(unittest.TestCase):
         self.assertEqual((self.root / ".env").read_bytes(), original)
         self.assertIn("pull", self.docker_log())
 
+    def test_update_pulls_all_services_before_backup_stop(self):
+        self.write_env(
+            "CANDYTEST_IMAGE=ghcr.io/mashouo/candytest:previous\n"
+            "CANDYTEST_MODE=caddy\n"
+            "CANDYTEST_DOMAIN=candy.example.com\n"
+            "CANDYTEST_HEALTH_TIMEOUT=1\n"
+        )
+
+        result = self.run_deploy(FAKE_CONTAINER="old-caddy", FAKE_RUNNING="true")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        log = self.docker_log()
+        pull_lines = [
+            line
+            for line in log.splitlines()
+            if "compose" in line and re.search(r"(?:^| )pull(?: |$)", line) and "version" not in line
+        ]
+        self.assertEqual(len(pull_lines), 1, log)
+        pull_line = pull_lines[0]
+        self.assertIn("compose.caddy.yaml", pull_line)
+        self.assertNotIn("pull candytest", pull_line)
+        config_index = log.index("config --quiet")
+        pull_index = log.index(pull_line)
+        stop_index = log.index("stop old-caddy")
+        backup_index = log.index("--volumes-from old-caddy:ro")
+        up_index = log.index("up -d")
+        self.assertLess(config_index, pull_index)
+        self.assertLess(pull_index, stop_index)
+        self.assertLess(stop_index, backup_index)
+        self.assertLess(backup_index, up_index)
+
+    def test_pull_failure_does_not_stop_or_backup_existing_service(self):
+        original = self.write_env(
+            "CANDYTEST_IMAGE=ghcr.io/mashouo/candytest:previous\n"
+            "CANDYTEST_MODE=host\n"
+            "CANDYTEST_HEALTH_TIMEOUT=1\n"
+        )
+
+        result = self.run_deploy(FAKE_CONTAINER="old-running", FAKE_PULL_FAIL="1")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((self.root / ".env").read_bytes(), original)
+        log = self.docker_log()
+        self.assertIn(" pull", log)
+        self.assertNotIn("stop old-running", log)
+        self.assertNotIn("volumes-from", log)
+        self.assertNotIn("up -d", log)
+
     def test_failed_update_rolls_back_with_rescue_tag_without_changing_env_image(self):
         original = self.write_env(
             "CANDYTEST_IMAGE=ghcr.io/mashouo/candytest:previous\n"
@@ -502,7 +562,7 @@ class DeploymentScriptShimTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("not attached", result.stderr)
-        self.assertNotIn(" pull candytest", self.docker_log())
+        self.assertNotIn(" pull", self.docker_log())
         self.assertFalse((self.root / ".env").exists())
 
     def test_builtin_bridge_is_rejected_for_npm(self):
@@ -517,7 +577,7 @@ class DeploymentScriptShimTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("user-defined Docker network", result.stderr)
-        self.assertNotIn(" pull candytest", self.docker_log())
+        self.assertNotIn(" pull", self.docker_log())
 
     def test_arbitrary_npm_named_container_is_not_treated_as_npm(self):
         result = self.run_deploy(
@@ -532,4 +592,4 @@ class DeploymentScriptShimTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("requires a running Nginx Proxy Manager", result.stderr)
-        self.assertNotIn(" pull candytest", self.docker_log())
+        self.assertNotIn(" pull", self.docker_log())

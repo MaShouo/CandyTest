@@ -17,7 +17,7 @@ chmod +x deploy.sh
 
 1. 检测正在运行的 Nginx Proxy Manager（NPM）；
 2. 复用 NPM 已有的 Docker 网络；
-3. 拉取 `ghcr.io/mashouo/candytest:latest`；
+3. 拉取所需镜像（默认 `ghcr.io/mashouo/candytest:latest`；Caddy 模式也包括 Caddy）；
 4. 启动容器并等待健康检查通过；
 5. 输出反向代理参数。
 
@@ -81,7 +81,7 @@ git pull
 ./deploy.sh
 ```
 
-已有部署在更新前会自动备份 `/data`。新镜像健康检查失败时会恢复旧镜像，但不会自动覆盖数据。
+已有部署会先拉取所需镜像，成功后再备份 `/data` 并更新；拉取失败不会中断当前服务。新容器健康检查失败时会恢复旧镜像，但不会自动覆盖数据。
 
 常用命令：
 
@@ -139,6 +139,20 @@ http://[IP]:8765/
 5. 点击当前任务的中转站统计条，可筛选下方记录；全部取消后显示所有记录。
 
 中转站 URL 不会自动追加 `/v1`。编辑时 API Key 留空表示保留原值。
+
+### 低成本知识题
+
+题目下拉框新增以下三题，均默认每站 **3 轮、low**；保留实测英文原文，只要求短答案，不追加 `FINAL:` 指令。
+
+| 题目 | 标准答案 | 核对来源 |
+| --- | --- | --- |
+| GPT-5 首发日期 | `2025-08-07` | [OpenAI](https://openai.com/index/introducing-gpt-5/) |
+| 2025 诺贝尔和平奖 | `María Corina Machado` | [Nobel Prize](https://www.nobelprize.org/prizes/peace/2025/press-release/) |
+| 2025 布克奖 | `Flesh` | [Booker Prizes](https://thebookerprizes.com/media-centre/press-releases/flesh-by-david-szalay-wins-the-booker-prize-2025) |
+
+按完整短答案判分，忽略首尾空白和大小写；和平奖也接受无重音的 `Maria Corina Machado`。`UNKNOWN` 计为未答对，不是 API 错误。模型覆盖可填 `gpt-6-astra`。
+
+这些题只反映知识回答差异，不能单独证明“降智”或换模；原始筛选使用 Chat Completions，而本项目仍使用 pi/Codex 的 Responses API，表现需要重新验证。历史正确率仍按站点跨题目聚合。
 
 ## 设置与数据
 

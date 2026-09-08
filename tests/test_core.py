@@ -23,6 +23,7 @@ from unittest.mock import patch
 
 from candytest import (
     CUP_PROMPT, DAG_PROMPT, ORIGINAL_CANDY_PROMPT, PROBABILITY_PROMPT, PROMPT_TEMPLATES,
+    QUESTION_DEFAULTS, QUESTION_NAMES,
     candy_prompt, question_prompt, random_candy_prompt, random_candy_prompts,
 )
 from candytest import cli
@@ -112,6 +113,24 @@ class CliParsingAndIsolationTests(unittest.TestCase):
         self.assertIn("G、H 都在 I 前", DAG_PROMPT)
         with self.assertRaisesRegex(ValueError, "不支持的题目"):
             question_prompt("missing")
+
+    def test_knowledge_questions_preserve_prompts_and_grade_whole_answers(self):
+        cases = (
+            ("gpt5_release", "On what date did OpenAI first publicly release GPT-5? If you do not know, say UNKNOWN. YYYY-MM-DD only. No tools.", "2025-08-07"),
+            ("nobel_peace_2025", "Who won the 2025 Nobel Peace Prize? If you do not know, say UNKNOWN. Name only. No tools.", "María Corina Machado"),
+            ("booker_2025", "Which novel won the 2025 Booker Prize? If you do not know, say UNKNOWN. Title only. No tools.", "Flesh"),
+        )
+        for question_id, original, correct in cases:
+            with self.subTest(question=question_id):
+                prompt, expected = question_prompt(question_id)
+                self.assertEqual(prompt, original)
+                self.assertEqual(QUESTION_DEFAULTS[question_id], (3, "low"))
+                self.assertTrue(cli.answer_is_correct(correct, expected))
+                self.assertTrue(cli.answer_is_correct(f" \n{correct.upper()}\n", expected))
+                for wrong in ("", "UNKNOWN", f"Not {correct}", f"{correct}\nUNKNOWN", f"FINAL: {correct}"):
+                    self.assertFalse(cli.answer_is_correct(wrong, expected))
+        self.assertTrue(cli.answer_is_correct("Maria Corina Machado", question_prompt("nobel_peace_2025")[1]))
+        self.assertFalse(cli.answer_is_correct("2025-08-08", question_prompt("gpt5_release")[1]))
 
     def test_dynamic_answer_formula_matches_small_brute_force(self):
         for counts in product((1, 2), repeat=6):
@@ -484,6 +503,9 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn('<option value="cup">水杯题</option>', template)
         self.assertIn('<option value="probability">骰子概率题</option>', template)
         self.assertIn('<option value="dag10">任务排序题</option>', template)
+        for question_id in ("gpt5_release", "nobel_peace_2025", "booker_2025"):
+            self.assertIn(f'<option value="{question_id}">{QUESTION_NAMES[question_id]}</option>', template)
+            self.assertIn(f'{question_id}: {{ rounds: 3, effort: "low" }}', source)
         self.assertIn('id="randomCandyFormat"', template)
         self.assertIn('name="random_candy_format"', template)
         self.assertIn('<option value="false">原题结构（默认，随机数据）</option>', template)
@@ -508,7 +530,7 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertNotIn("不计正确率", template)
         self.assertIn("API 错误仅显示在当前任务", template)
         style = (Path(__file__).parents[1] / "candytest/static/style.css").read_text(encoding="utf-8")
-        self.assertIn(".stat-grid{display:grid;grid-template-columns:1fr", style)
+        self.assertRegex(style, r"\.stat-grid\s*\{\s*display:\s*grid;\s*grid-template-columns:\s*1fr")
         self.assertIn(".stat-details", style)
         self.assertIn(".stat-details-stacked", style)
         self.assertIn(".stat-alerts", style)
@@ -517,7 +539,7 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn(".stat-selectable.not-selected", style)
         self.assertIn(".stat-actions", style)
         self.assertIn(".stat-multiplier", style)
-        self.assertIn("text-align:right", style)
+        self.assertRegex(style, r"text-align:\s*right")
         self.assertIn("4.5rem 12rem", style)
         self.assertIn(".drag-handle", style)
         self.assertIn(".gateway-row.drag-over", style)
@@ -961,6 +983,26 @@ class SchedulingTests(unittest.TestCase):
         self.assertEqual(prompts, [CUP_PROMPT] * 4)
         self.assertEqual(self.db.job(job_id)["summary"]["correct"], 4)
 
+    def test_knowledge_questions_run_and_grade_in_both_scheduling_modes(self):
+        for mode in ("serial", "parallel"):
+            for question_id in ("gpt5_release", "nobel_peace_2025", "booker_2025"):
+                with self.subTest(mode=mode, question=question_id):
+                    prompt, expected = question_prompt(question_id)
+                    job_id = self.make_job(mode, 3)
+                    def fake_invoke(_engine, site, _model, effort, _timeout, _cancel, _proxy, actual_prompt):
+                        self.assertEqual(actual_prompt, prompt)
+                        self.assertEqual(effort, "low")
+                        return {"answer": expected[0] if site["id"] == 1 else "UNKNOWN"}
+                    with patch("candytest.jobs.invoke", side_effect=fake_invoke) as invoke:
+                        self.manager._run_job(job_id, "pi", mode, 3, "low", None, self.sites,
+                                              question_id=question_id)
+                    self.assertEqual(invoke.call_count, 6)
+                    job = self.db.job(job_id)
+                    self.assertEqual(job["status"], "completed")
+                    self.assertEqual(job["summary"]["correct"], 3)
+                    self.assertEqual(job["summary"]["incorrect"], 3)
+                    self.assertEqual(job["summary"]["errors"], 0)
+
     def test_api_calls_use_ten_minute_timeout(self):
         timeouts: list[int] = []
 
@@ -1175,6 +1217,21 @@ class ApiTests(unittest.TestCase):
             (invalid_toggle.status_code, invalid_toggle.get_json()["error"]["code"]),
             (400, "INVALID_RANDOM_FORMAT"),
         )
+
+    def test_job_api_accepts_knowledge_questions_with_low_cost_defaults(self):
+        site_id = self.add_site()
+        manager = self.app.extensions["candytest_jobs"]
+        with patch("candytest.app.cli_availability", return_value={"pi": True, "codex": True}), \
+             patch.object(manager, "start", return_value=321) as start:
+            for engine in ("pi", "codex"):
+                for question_id in ("gpt5_release", "nobel_peace_2025", "booker_2025"):
+                    with self.subTest(engine=engine, question=question_id):
+                        response = self.client.post("/api/jobs", json={
+                            "engine": engine, "question_id": question_id, "gateway_ids": [site_id],
+                        })
+                        self.assertEqual(response.status_code, 201)
+                        self.assertEqual(start.call_args.args[:4], (engine, "parallel", 3, "low"))
+                        self.assertEqual(start.call_args.args[-1], question_id)
 
     def test_proxy_api_validates_and_passes_snapshot_to_new_job(self):
         self.assertEqual(

@@ -7,14 +7,16 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-<header class="topbar"><div><h1>CandyTest 设置</h1><p>{% if deployment == 'server' %}登录账号、WebDAV 同步与 Clash 网络代理{% else %}WebDAV 同步与 Clash 网络代理{% endif %}</p></div><div class="header-actions"><a class="button-link secondary" href="{{ url_for('index') }}">返回主界面</a></div></header>
-<main>
+<a class="skip-link" href="#mainContent">跳到主要内容</a>
+<header class="topbar"><div class="brand"><span class="brand-mark" aria-hidden="true">CT</span><div><h1>CandyTest 设置</h1><p>{% if deployment == 'server' %}登录账号、WebDAV 同步与 Clash 网络代理{% else %}WebDAV 同步与 Clash 网络代理{% endif %}</p></div></div><div class="header-actions"><a class="button-link secondary" href="{{ url_for('index') }}">返回主界面</a></div></header>
+<main id="mainContent">
+  <div class="workspace-intro"><div><p class="eyebrow">PREFERENCES</p><h2>工作台设置</h2><p>管理数据同步、网络连接与访问安全。</p></div></div>
   <p id="flash" class="flash" role="status"></p>
   <div class="settings-layout">
     <nav class="settings-nav" aria-label="设置分类">
-      <button type="button" class="settings-tab active" data-section="webdav" aria-selected="true">WebDAV</button>
-      <button type="button" class="settings-tab" data-section="proxy" aria-selected="false">Clash 代理</button>
-      {% if deployment == 'server' %}<button type="button" class="settings-tab" data-section="account" aria-selected="false">登录账号</button>{% endif %}
+      <button type="button" class="settings-tab active" data-section="webdav" aria-controls="webdavSettings" aria-pressed="true">WebDAV</button>
+      <button type="button" class="settings-tab" data-section="proxy" aria-controls="proxySettings" aria-pressed="false">Clash 代理</button>
+      {% if deployment == 'server' %}<button type="button" class="settings-tab" data-section="account" aria-controls="accountSettings" aria-pressed="false">登录账号</button>{% endif %}
     </nav>
     <div class="settings-content">
       <section id="webdavSettings" class="panel settings-section"><div class="section-title"><div><h2>WebDAV 完整同步</h2><p>同步整个 SQLite 数据库：中转站、API Key、Clash 设置、任务、回答和历史都会完整覆盖。</p></div><span id="webdavStatus" class="badge">未配置</span></div>

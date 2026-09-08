@@ -72,13 +72,20 @@ DAG_PROMPT = """十个不同任务 A,B,C,D,E,F,G,H,I,J 的先后约束为：A �
 问共有多少种包含全部十个任务的合法线性执行顺序？请给出可人工复核的分层计数、子集递推或分类证明。不得联网、调用工具或编写/运行代码。
 最后一行必须严格写成 FINAL: <整数>。
 """
+GPT5_RELEASE_PROMPT = "On what date did OpenAI first publicly release GPT-5? If you do not know, say UNKNOWN. YYYY-MM-DD only. No tools."
+NOBEL_PEACE_2025_PROMPT = "Who won the 2025 Nobel Peace Prize? If you do not know, say UNKNOWN. Name only. No tools."
+BOOKER_2025_PROMPT = "Which novel won the 2025 Booker Prize? If you do not know, say UNKNOWN. Title only. No tools."
 QUESTION_NAMES = {
     "candy": "糖果题", "cup": "水杯题",
     "probability": "骰子概率题", "dag10": "任务排序题",
+    "gpt5_release": "GPT-5 首发日期", "nobel_peace_2025": "2025 诺贝尔和平奖",
+    "booker_2025": "2025 布克奖",
 }
 QUESTION_DEFAULTS = {
     "candy": (5, "low"), "cup": (2, "medium"),
     "probability": (5, "medium"), "dag10": (5, "medium"),
+    "gpt5_release": (3, "low"), "nobel_peace_2025": (3, "low"),
+    "booker_2025": (3, "low"),
 }
 DEFAULT_TERMS = ("ITEM", "ALFA", "BRAV", "CHAR", "FORM", "MODE")
 
@@ -118,7 +125,7 @@ def random_candy_prompt(random_format: bool | str = True) -> tuple[str, int | st
     return random_candy_prompts(1, random_format)[0]
 
 
-def question_prompt(question_id: str, random_candy_format: bool | str = False) -> tuple[str, int | str]:
+def question_prompt(question_id: str, random_candy_format: bool | str = False) -> tuple[str, int | str | tuple[str, ...]]:
     if question_id == "candy":
         return random_candy_prompt(random_candy_format)
     if question_id == "cup":
@@ -127,6 +134,13 @@ def question_prompt(question_id: str, random_candy_format: bool | str = False) -
         return PROBABILITY_PROMPT, "319/1728"
     if question_id == "dag10":
         return DAG_PROMPT, "666"
+    # Tuples contain accepted whole-answer variants, without a FINAL prefix.
+    if question_id == "gpt5_release":
+        return GPT5_RELEASE_PROMPT, ("2025-08-07",)
+    if question_id == "nobel_peace_2025":
+        return NOBEL_PEACE_2025_PROMPT, ("María Corina Machado", "Maria Corina Machado")
+    if question_id == "booker_2025":
+        return BOOKER_2025_PROMPT, ("Flesh",)
     raise ValueError("不支持的题目")
 
 

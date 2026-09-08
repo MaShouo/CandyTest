@@ -32,7 +32,9 @@ def _final_answer(answer: str) -> str | None:
     return f"{fraction.group(1)}/{fraction.group(2)}" if fraction else value
 
 
-def answer_is_correct(answer: str, expected: int | str) -> bool:
+def answer_is_correct(answer: str, expected: int | str | tuple[str, ...]) -> bool:
+    if isinstance(expected, tuple):
+        return answer.strip().casefold() in (value.casefold() for value in expected)
     if isinstance(expected, str):
         return _final_answer(answer) == expected
     return re.search(rf"(?<!\d){expected}(?!\d)", answer) is not None

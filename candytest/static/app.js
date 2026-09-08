@@ -1,9 +1,9 @@
 (() => {
   "use strict";
   const $ = (s) => document.querySelector(s);
-  const state = { gateways: [], history: new Map(), runtime: null, webdav: null, syncBusy: false, editing: null, inlineEditing: false, currentId: null, currentJob: null, currentJobId: null, selectedGatewayIds: new Set(), draggingGatewayId: null, reordering: false };
+  const state = { gateways: [], history: new Map(), runtime: null, webdav: null, syncBusy: false, starting: false, editing: null, inlineEditing: false, currentId: null, currentJob: null, currentJobId: null, selectedGatewayIds: new Set(), draggingGatewayId: null, reordering: false };
   const efforts = { pi: ["off", "minimal", "low", "medium", "high", "xhigh", "max"], codex: ["low", "medium", "high", "xhigh", "max", "ultra"] };
-  const questionDefaults = { candy: { rounds: 5, effort: "low" }, cup: { rounds: 2, effort: "medium" }, probability: { rounds: 5, effort: "medium" }, dag10: { rounds: 5, effort: "medium" } };
+  const questionDefaults = { candy: { rounds: 5, effort: "low" }, cup: { rounds: 2, effort: "medium" }, probability: { rounds: 5, effort: "medium" }, dag10: { rounds: 5, effort: "medium" }, gpt5_release: { rounds: 3, effort: "low" }, nobel_peace_2025: { rounds: 3, effort: "low" }, booker_2025: { rounds: 3, effort: "low" } };
 
   function node(tag, text, className) { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (className) el.className = className; return el; }
   function clear(el, children = []) { el.replaceChildren(...children); }
@@ -28,20 +28,28 @@
     return { text: run.is_correct ? "正确" : "错误", className: "" };
   }
   function jobStatus(status) { return ({ queued: "排队中", running: "运行中", cancelling: "正在中断", cancelled: "已中断", completed: "已完成", failed: "失败" })[status] || status; }
+  function updateTestEstimate(job = state.currentJob) {
+    const count = document.querySelectorAll("#gatewayRows input[type=checkbox]:checked:not(:disabled)").length;
+    const rounds = Number($("#rounds").value);
+    const active = Boolean(job && ["queued", "running", "cancelling"].includes(job.status));
+    const available = Boolean(state.runtime?.engines?.[$("#engine").value]);
+    $("#startJob").disabled = state.starting || active || !available || !count;
+    $("#startJob").textContent = state.starting ? "正在启动…" : active ? "测试进行中…" : "开始测试";
+    $("#testEstimate").textContent = !available ? "所选 CLI 引擎不可用，请先安装 pi 或 Codex。" : active ? "当前任务结束后可开始新测试；下方可查看进度或中断。" : !count ? "请先在上方勾选至少一个中转站。" : !Number.isInteger(rounds) || rounds < 1 || rounds > 100 ? "每站轮数应为 1–100 的整数。" : `已选 ${count} 个站点 × 每站 ${rounds} 轮，共 ${count * rounds} 次调用。测试会产生 API 费用。`;
+  }
   function updateJobControls(job) {
     const active = Boolean(job && ["queued", "running", "cancelling"].includes(job.status));
     const stop = $("#stopJob");
     stop.hidden = !active;
     stop.disabled = job?.status === "cancelling";
     stop.textContent = job?.status === "cancelling" ? "正在中断…" : "中断测试";
-    const engines = state.runtime?.engines || {};
-    $("#startJob").disabled = active || (!engines.pi && !engines.codex);
+    updateTestEstimate(job);
   }
   function openDetailKeys(container) { return new Set([...container.querySelectorAll("details[open][data-detail-key]")].map(item => item.dataset.detailKey)); }
   function details(answer, error, key, opened = new Set()) { const d = document.createElement("details"), s = node("summary", "查看"); d.dataset.detailKey = key; d.open = opened.has(key); d.append(s); if (answer) { d.append(node("strong", "回答全文")); d.append(node("pre", answer)); } if (error) { d.append(node("strong", "错误详情", "warn")); d.append(node("pre", error)); } if (!answer && !error) d.append(node("span", "无额外详情")); return d; }
   function setEfforts(preferred) { const select = $("#effort"), previous = preferred || select.value || "low"; clear(select, efforts[$("#engine").value].map(value => { const o = node("option", value); o.value = value; if (value === previous || (!efforts[$("#engine").value].includes(previous) && value === "low")) o.selected = true; return o; })); }
-  function setQuestionDefaults() { const defaults = questionDefaults[$("#question").value]; $("#rounds").value = defaults.rounds; $("#randomCandyFormat").style.display = $("#question").value === "candy" ? "" : "none"; setEfforts(defaults.effort); }
-  function renderEngines() { const el = $("#engineStatus"); const engines = state.runtime.engines; clear(el, ["pi", "codex"].map(name => node("span", `${name}: ${engines[name] ? "可用" : "未安装"}`, `badge ${engines[name] ? "ok" : "error"}`))); const select = $("#engine"); for (const option of select.options) option.disabled = !engines[option.value]; if (select.selectedOptions[0]?.disabled) select.value = engines.pi ? "pi" : "codex"; setEfforts(); $("#startJob").disabled = !engines.pi && !engines.codex; }
+  function setQuestionDefaults() { const defaults = questionDefaults[$("#question").value]; $("#rounds").value = defaults.rounds; $("#randomCandyFormat").style.display = $("#question").value === "candy" ? "" : "none"; setEfforts(defaults.effort); updateTestEstimate(); }
+  function renderEngines() { const el = $("#engineStatus"); const engines = state.runtime.engines; clear(el, ["pi", "codex"].map(name => node("span", `${name}: ${engines[name] ? "可用" : "未安装"}`, `badge ${engines[name] ? "ok" : "error"}`))); const select = $("#engine"); for (const option of select.options) option.disabled = !engines[option.value]; if (select.selectedOptions[0]?.disabled) select.value = engines.pi ? "pi" : "codex"; setEfforts(); updateTestEstimate(); }
   function shortRevision(value) { return value ? `${value.slice(0, 8)}…` : "无"; }
   function renderWebdav(settings) { state.webdav = settings; updateSyncControls(); }
   async function loadWebdav() { const data = await api("/api/settings/webdav"); renderWebdav(data.webdav); }
@@ -67,6 +75,7 @@
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
       checkbox.value = gateway.id;
+      checkbox.setAttribute("aria-label", `选择中转站 ${gateway.name}`);
       checkbox.disabled = !gateway.enabled;
       checkbox.checked = gateway.enabled && selected.has(gateway.id);
       const checkboxCell = node("td");
@@ -104,7 +113,7 @@
       rows.push(tr);
     }
     if (!state.gateways.length) {
-      const tr = document.createElement("tr"), td = node("td", "尚未添加中转站", "empty");
+      const tr = document.createElement("tr"), td = node("td", "还没有中转站。点击“添加中转站”，填写 API 地址、模型和密钥即可开始。", "empty");
       td.colSpan = 11;
       tr.append(td);
       rows.length = 0;
@@ -120,6 +129,8 @@
     selectAll.disabled = enabled.length === 0;
     selectAll.checked = enabled.length > 0 && checked === enabled.length;
     selectAll.indeterminate = checked > 0 && checked < enabled.length;
+    $("#selectionSummary").textContent = `已选择 ${checked} / ${enabled.length} 个可用站点${state.gateways.length > enabled.length ? ` · ${state.gateways.length - enabled.length} 个已停用` : ""}`;
+    updateTestEstimate();
   }
   async function saveGatewayOrder(draggedGatewayId, targetGatewayId, before, keepFocus = false) {
     const previous = state.gateways;
@@ -195,7 +206,7 @@
       else if (event.key === "Escape") { event.preventDefault(); void finish(false); }
     };
   }
-  function showGateway(gateway) { state.editing = gateway || null; const form = $("#gatewayForm"); form.reset(); $("#gatewayTitle").textContent = gateway ? `编辑：${gateway.name}` : "添加中转站"; if (gateway) { form.name.value = gateway.name; form.multiplier.value = gateway.multiplier; form.base_url.value = gateway.base_url; form.model.value = gateway.model; form.enabled.checked = gateway.enabled; } $("#gatewayPanel").hidden = false; form.name.focus(); }
+  function showGateway(gateway) { state.editing = gateway || null; const form = $("#gatewayForm"); form.reset(); $("#gatewayTitle").textContent = gateway ? `编辑：${gateway.name}` : "添加中转站"; if (gateway) { form.name.value = gateway.name; form.multiplier.value = gateway.multiplier; form.base_url.value = gateway.base_url; form.model.value = gateway.model; form.enabled.checked = gateway.enabled; } $("#gatewayPanel").hidden = false; form.api_key.required = !gateway; form.name.focus(); }
   async function removeGateway(gateway) {
     if (!confirm(`删除“${gateway.name}”中转站？`)) return;
     const deleteHistory = confirm(`是否同时删除“${gateway.name}”对应的测试记录？\n\n确定：删除记录；取消：保留记录。`);
@@ -288,6 +299,11 @@
 
   function renderJob(job) {
     updateJobControls(job);
+    const progress = $("#jobProgress");
+    progress.hidden = !job;
+    progress.max = job?.summary.planned || 1;
+    progress.value = job?.summary.completed || 0;
+    $("#filterHint").hidden = !job || !job.gateways.length;
     if (!job) {
       state.currentJob = null;
       state.currentJobId = null;
@@ -306,6 +322,8 @@
     const validGatewayIds = new Set(job.gateways.map(site => Number(site.gateway_id)));
     for (const gatewayId of state.selectedGatewayIds) if (!validGatewayIds.has(gatewayId)) state.selectedGatewayIds.delete(gatewayId);
     state.currentJob = job;
+    $("#resetFilter").hidden = state.selectedGatewayIds.size === 0;
+    $("#filterCaption").textContent = state.selectedGatewayIds.size ? `正在查看 ${state.selectedGatewayIds.size} 个站点的记录` : "点击站点统计可筛选下方记录，再次点击取消。";
     $("#jobCaption").textContent = `任务 #${job.id} · ${job.engine} · ${job.mode === "parallel" ? "并行" : "串行"} · 每站 ${job.rounds} 轮 · ${jobStatus(job.status)}`;
     const summary = $("#jobSummary"); summary.textContent = `总正确率 ${pct(job.summary.accuracy)} · ${job.summary.correct}/${job.summary.graded} · API 错误 ${job.summary.errors} · 进度 ${job.summary.completed}/${job.summary.planned}`; summary.className = `metric ${job.summary.accuracy != null && job.summary.accuracy < 80 ? "low" : ""}`;
     clear($("#jobStats"), job.gateways.map(site => statCard(site, false, job.rounds, true)));
@@ -318,9 +336,10 @@
   async function loadGateways() { const data = await api("/api/gateways"); state.gateways = data.gateways; renderGateways(); }
   async function loadHistory() { renderHistory(await api("/api/history")); }
   async function refreshCurrent() { const data = await api("/api/jobs/current"); renderJob(data.job); state.currentId = data.job?.id || null; if (["completed", "failed", "cancelled"].includes(data.job?.status)) await loadHistory(); }
+  $("#resetFilter").onclick = () => { state.selectedGatewayIds.clear(); renderJob(state.currentJob); };
   $("#jobStats").onclick = (event) => { const stat = event.target.closest(".stat-selectable"); if (stat && $("#jobStats").contains(stat)) toggleGatewayFilter(stat); };
   $("#jobStats").onkeydown = (event) => { if (event.key !== "Enter" && event.key !== " ") return; const stat = event.target.closest(".stat-selectable"); if (!stat || !$("#jobStats").contains(stat)) return; event.preventDefault(); toggleGatewayFilter(stat); };
-  $("#newGateway").onclick = () => showGateway(); $("#cancelGateway").onclick = () => { $("#gatewayPanel").hidden = true; };
+  $("#newGateway").onclick = () => showGateway(); $("#cancelGateway").onclick = () => { $("#gatewayPanel").hidden = true; $("#newGateway").focus(); };
   $("#selectAllGateways").onchange = (event) => { for (const checkbox of document.querySelectorAll("#gatewayRows input[type=checkbox]:not(:disabled)")) checkbox.checked = event.currentTarget.checked; syncGatewaySelectAll(); };
   $("#gatewayRows").onchange = (event) => { if (event.target.matches("input[type=checkbox]")) syncGatewaySelectAll(); };
   $("#gatewayRows").ondblclick = (event) => { const cell = event.target.closest(".inline-editable"); if (cell) editGatewayCell(cell); };
@@ -360,9 +379,24 @@
   $("#pushWebdav").onclick = async () => { if (!confirm("Push 会用本机全部数据覆盖云端。继续吗？")) return; setSyncBusy(true); try { let data; try { data = await api("/api/webdav/push", { method: "POST", body: JSON.stringify({ force: false }) }); } catch (e) { if (e.code !== "WEBDAV_CONFLICT" || !confirm("远端已被其他设备更新。确定强制用本机数据覆盖云端吗？")) throw e; data = await api("/api/webdav/push", { method: "POST", body: JSON.stringify({ force: true }) }); } await loadWebdav(); flash(`Push 完成：revision ${shortRevision(data.result.revision)}${data.result.warnings?.length ? `；${data.result.warnings.join("；")}` : ""}`); } catch (e) { flash(e.message, true); } finally { setSyncBusy(false); } };
   $("#pullWebdav").onclick = async () => { if (!confirm("危险：Pull 不会备份，会用云端快照替换本机全部中转站、API Key、代理设置和历史。确定继续吗？")) return; setSyncBusy(true); try { const data = await api("/api/webdav/pull", { method: "POST", body: JSON.stringify({ confirm: true }) }); flash(`Pull 完成：revision ${shortRevision(data.result.revision)}，正在刷新页面…`); setTimeout(() => location.reload(), 300); } catch (e) { flash(e.message, true); setSyncBusy(false); } };
   $("#gatewayForm").onsubmit = async (event) => { event.preventDefault(); const f = event.currentTarget; const body = { name: f.name.value, multiplier: Number(f.multiplier.value), base_url: f.base_url.value, model: f.model.value, api_key: f.api_key.value, enabled: f.enabled.checked }; try { await api(state.editing ? `/api/gateways/${state.editing.id}` : "/api/gateways", { method: state.editing ? "PUT" : "POST", body: JSON.stringify(body) }); $("#gatewayPanel").hidden = true; flash("中转站已更新。"); await loadGateways(); await loadHistory(); await refreshCurrent(); } catch (e) { flash(e.message, true); } };
-  $("#engine").onchange = () => setEfforts();
+  $("#engine").onchange = () => { setEfforts(); updateTestEstimate(); };
+  $("#rounds").oninput = () => updateTestEstimate();
   $("#question").onchange = setQuestionDefaults;
-  $("#jobForm").onsubmit = async (event) => { event.preventDefault(); const f = event.currentTarget, gateway_ids = [...document.querySelectorAll("#gatewayRows input[type=checkbox]:checked")].map(x => Number(x.value)), candyFormat = f.random_candy_format.value; const body = { question_id: f.question_id.value, random_candy_format: candyFormat === "original" ? "original" : candyFormat === "true", engine: f.engine.value, rounds: Number(f.rounds.value), reasoning_effort: f.reasoning_effort.value, model_override: f.model_override.value, mode: f.mode.value, gateway_ids }; try { const result = await api("/api/jobs", { method: "POST", body: JSON.stringify(body) }); flash(`任务 #${result.job_id} 已启动。`); await refreshCurrent(); } catch (e) { flash(e.message, true); } };
+  $("#jobForm").onsubmit = async (event) => {
+    event.preventDefault();
+    if ($("#startJob").disabled) return;
+    const f = event.currentTarget, gateway_ids = [...document.querySelectorAll("#gatewayRows input[type=checkbox]:checked")].map(x => Number(x.value)), candyFormat = f.random_candy_format.value;
+    const body = { question_id: f.question_id.value, random_candy_format: candyFormat === "original" ? "original" : candyFormat === "true", engine: f.engine.value, rounds: Number(f.rounds.value), reasoning_effort: f.reasoning_effort.value, model_override: f.model_override.value, mode: f.mode.value, gateway_ids };
+    state.starting = true;
+    updateTestEstimate();
+    try {
+      const result = await api("/api/jobs", { method: "POST", body: JSON.stringify(body) });
+      flash(`任务 #${result.job_id} 已启动。`);
+      await refreshCurrent();
+      $("#currentTask").scrollIntoView({ block: "start" });
+    } catch (e) { flash(e.message, true); }
+    finally { state.starting = false; updateTestEstimate(); }
+  };
   $("#stopJob").onclick = async () => { if (!state.currentId || !confirm("确定中断当前测试？已完成的轮次会保留，正在调用的 CLI 进程将被终止。")) return; const button = $("#stopJob"); button.disabled = true; button.textContent = "正在中断…"; try { await api(`/api/jobs/${state.currentId}/cancel`, { method: "POST" }); flash("已发送中断请求，正在终止 CLI 调用…"); await refreshCurrent(); } catch (e) { flash(e.message, true); button.disabled = false; button.textContent = "中断测试"; } };
   $("#clearHistory").onclick = async () => { if (!confirm("确认清空所有测试任务和运行历史？中转站配置不会删除。")) return; try { await api("/api/history", { method: "DELETE", body: JSON.stringify({ confirm: true }) }); flash("历史已清空。"); await loadHistory(); renderJob(null); } catch (e) { flash(e.message, true); } };
   const logoutButton = $("#logout");

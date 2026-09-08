@@ -127,7 +127,7 @@ class JobManager:
 
     def _run_gateway(self, job_id: int, engine: str, effort: str,
                      model_override: str | None, gateway: dict[str, Any],
-                     questions: list[tuple[str, int | str]],
+                     questions: list[tuple[str, int | str | tuple[str, ...]]],
                      cancel_event: threading.Event | None = None,
                      proxy_url: str | None = None,
                      timeout: int = DEFAULT_TIMEOUT_SECONDS) -> None:

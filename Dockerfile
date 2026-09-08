@@ -34,11 +34,11 @@ RUN apt-get update \
 WORKDIR /app
 
 # Copy only application files; local databases and credentials never enter the image.
-COPY requirements.txt run.py ./
-COPY candytest ./candytest
+COPY requirements.txt ./
+RUN /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
 
-RUN /opt/venv/bin/pip install --no-cache-dir -r requirements.txt \
-    && chown -R node:node /app
+COPY --chown=node:node run.py ./
+COPY --chown=node:node candytest ./candytest
 
 USER node
 

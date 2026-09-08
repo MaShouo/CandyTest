@@ -6,15 +6,35 @@
   {% if deployment == 'server' %}<meta name="csrf-token" content="{{ csrf_token }}">{% endif %}
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-<body>
-<header class="topbar"><div><h1>CandyTest</h1><p>中转站 GPT 智商检测 · {% if deployment == 'server' %}服务器执行（已登录）{% else %}本地执行{% endif %}</p></div><div class="header-actions"><div id="engineStatus" class="engine-status"></div><a class="button-link secondary" href="{{ url_for('settings') }}">设置</a><button id="pushWebdav" type="button" class="secondary" disabled>Push 覆盖云端</button><button id="pullWebdav" type="button" class="stop" disabled>Pull 覆盖本机</button>{% if deployment == 'server' %}<button id="logout" type="button" class="secondary logout">退出登录</button>{% endif %}</div></header>
-<main>
+<body class="dashboard-page">
+<a class="skip-link" href="#mainContent">跳到主要内容</a>
+<header class="topbar">
+  <div class="brand"><span class="brand-mark" aria-hidden="true">CT</span><div><h1>CandyTest</h1><p>中转站 GPT 智商检测 · {% if deployment == 'server' %}服务器执行（已登录）{% else %}本地执行{% endif %}</p></div></div>
+  <div class="header-actions">
+    <div id="engineStatus" class="engine-status" aria-label="引擎状态"></div>
+    <a class="button-link secondary" href="{{ url_for('settings') }}">设置</a>
+    <button id="pushWebdav" type="button" class="secondary" disabled title="用本机全部数据覆盖云端；需先配置 WebDAV">上传云端 · Push</button>
+    <button id="pullWebdav" type="button" class="secondary danger" disabled title="用云端数据覆盖本机，不会自动备份；需先配置 WebDAV">覆盖本机 · Pull</button>
+    {% if deployment == 'server' %}<button id="logout" type="button" class="secondary logout">退出登录</button>{% endif %}
+  </div>
+</header>
+<nav class="workspace-nav" aria-label="工作台导航">
+  <p class="eyebrow">快速跳转</p>
+  <a href="#gateways"><span aria-hidden="true">01</span>选择站点</a>
+  <a href="#testSetup"><span aria-hidden="true">02</span>配置测试</a>
+  <a href="#currentTask"><span aria-hidden="true">03</span>当前任务</a>
+  <a href="#history"><span aria-hidden="true">04</span>历史记录</a>
+</nav>
+<main id="mainContent">
+  <div class="workspace-intro"><div><p class="eyebrow">MODEL EVALUATION</p><h2>测试工作台</h2><p>从一次测试开始，了解每个中转站的真实表现。</p></div></div>
   <section class="notice"><strong>安全提示：</strong>{% if deployment == 'server' %}服务端数据库会明文保存 API Key；请仅通过你配置的 HTTPS 反向代理访问，并妥善保管管理员凭据。{% else %}API Key 会以<strong>本地明文</strong>保存在当前用户数据目录；服务只监听回环地址。请勿在共享帐户中保存生产密钥。{% endif %}</section>
   {% if deployment == 'server' and default_credentials %}<section class="notice default-credential-warning"><strong>必须修改初始账号：</strong>当前用户名和密码均为 <code>admin</code>，请前往<a href="{{ url_for('settings') }}?section=account">“设置 → 登录账号”</a>修改。</section>{% endif %}
   <p id="flash" class="flash" role="status"></p>
 
-  <section class="panel"><div class="section-title"><div><h2>中转站</h2><p>选择一个或多个启用站点；双击名称或倍率可直接编辑；URL 应为 OpenAI 兼容 Responses API 地址。</p></div><button id="newGateway" class="secondary">添加中转站</button></div>
-    <div class="table-wrap"><table><thead><tr><th aria-label="排序">排序</th><th><label class="check select-all"><input id="selectAllGateways" type="checkbox" disabled> 全选</label></th><th>中转站名称</th><th>倍率</th><th>Responses API URL</th><th>默认模型</th><th>API Key</th><th>正确/总次数</th><th>历史正确率</th><th>今日正确率</th><th>操作</th></tr></thead><tbody id="gatewayRows"></tbody></table></div>
+  <section class="panel" id="gateways" aria-labelledby="gatewaysTitle">
+    <div class="section-title"><div class="section-heading"><span class="step-number" aria-hidden="true">01</span><div><h2 id="gatewaysTitle">选择中转站</h2><p>勾选要对比的站点。双击名称或倍率可编辑，拖动左侧手柄可排序。</p></div></div><button id="newGateway" type="button">＋ 添加中转站</button></div>
+    <p id="selectionSummary" class="selection-summary" role="status">正在加载中转站…</p>
+    <div class="table-wrap" tabindex="0" role="region" aria-label="可横向滚动的数据表格"><table><thead><tr><th aria-label="排序">排序</th><th><label class="check select-all"><input id="selectAllGateways" type="checkbox" disabled> 全选</label></th><th>中转站名称</th><th>倍率</th><th>Responses API URL</th><th>默认模型</th><th>API Key</th><th>正确/总次数</th><th>历史正确率</th><th>今日正确率</th><th>操作</th></tr></thead><tbody id="gatewayRows"><tr><td colspan="11" class="empty">正在加载中转站…</td></tr></tbody></table></div>
   </section>
 
   <section class="panel" id="gatewayPanel" hidden><div class="section-title"><h2 id="gatewayTitle">添加中转站</h2><button id="cancelGateway" class="link">取消</button></div>
@@ -29,28 +49,31 @@
     </form>
   </section>
 
-  <section class="panel"><div class="section-title"><div><h2>开始测试</h2><p>并行：站点之间同时测试，单个站点内仍逐轮执行。串行：所有站点和轮次按选择顺序执行。</p></div></div>
+  <section class="panel" id="testSetup" aria-labelledby="testSetupTitle"><div class="section-title"><div class="section-heading"><span class="step-number" aria-hidden="true">02</span><div><h2 id="testSetupTitle">配置测试</h2><p>切换题目会自动填入推荐轮数和推理强度，也可以按需调整。</p></div></div></div>
     <form id="jobForm" class="controls">
-      <label>题目<select name="question_id" id="question"><option value="candy">糖果题</option><option value="cup">水杯题</option><option value="probability">骰子概率题</option><option value="dag10">任务排序题</option></select></label>
+      <label>题目<select name="question_id" id="question"><option value="candy">糖果题</option><option value="cup">水杯题</option><option value="probability">骰子概率题</option><option value="dag10">任务排序题</option><option value="gpt5_release">GPT-5 首发日期</option><option value="nobel_peace_2025">2025 诺贝尔和平奖</option><option value="booker_2025">2025 布克奖</option></select></label>
       <label>CLI 引擎<select name="engine" id="engine"><option value="pi">pi</option><option value="codex">Codex</option></select></label>
       <label>每站轮数<input name="rounds" id="rounds" type="number" min="1" max="100" value="5" required></label>
-      <label>Reasoning effort<select name="reasoning_effort" id="effort"></select></label>
+      <label>推理强度<select name="reasoning_effort" id="effort"></select></label>
       <label>模型覆盖（可选）<input name="model_override" maxlength="300" placeholder="留空使用各站默认模型"></label>
-      <label>调度方式<select name="mode"><option value="parallel">并行（默认）</option><option value="serial">串行</option></select></label>
+      <label>调度方式<select name="mode"><option value="parallel">并行（默认）</option><option value="serial">串行</option></select><small>并行：各站同时测试；串行：按站点顺序逐轮执行。</small></label>
       <label id="randomCandyFormat">糖果题格式<select name="random_candy_format"><option value="false">原题结构（默认，随机数据）</option><option value="original">完全原题（不替换）</option><option value="true">随机格式</option></select></label>
-      <div class="actions"><button id="startJob" type="submit">开始测试</button></div>
+      <div class="full form-footer"><p id="testEstimate" class="field-help" role="status">请先选择至少一个中转站。</p><button id="startJob" type="submit" disabled aria-describedby="testEstimate">开始测试</button></div>
     </form>
   </section>
 
-  <section class="panel"><div class="section-title"><div><h2>当前任务</h2><p id="jobCaption">尚未运行测试。API 错误仅显示在当前任务。</p></div><div class="current-actions"><span id="jobSummary" class="metric">—</span><button id="stopJob" type="button" class="stop" hidden>中断测试</button></div></div>
+  <section class="panel" id="currentTask" aria-labelledby="currentTaskTitle"><div class="section-title"><div class="section-heading"><span class="step-number" aria-hidden="true">03</span><div><h2 id="currentTaskTitle">当前任务</h2><p id="jobCaption">尚未运行测试。API 错误仅显示在当前任务。</p></div></div><div class="current-actions"><span id="jobSummary" class="metric">—</span><button id="stopJob" type="button" class="stop" hidden>中断测试</button></div></div>
+    <progress id="jobProgress" class="task-progress" max="1" value="0" aria-label="当前任务完成进度" hidden></progress>
+    <div class="filter-hint" id="filterHint" hidden><span id="filterCaption">点击站点统计可筛选下方记录，再次点击取消。</span><button id="resetFilter" type="button" class="link" hidden>显示全部站点</button></div>
     <div id="jobStats" class="stat-grid"></div>
-    <div class="table-wrap"><table><thead><tr><th>站点</th><th>轮次</th><th>状态</th><th>耗时</th><th>Input</th><th>Output</th><th>Reasoning</th><th>Total</th><th>详情</th></tr></thead><tbody id="runRows"><tr><td colspan="9" class="empty">暂无测试记录</td></tr></tbody></table></div>
+    <div class="table-wrap" tabindex="0" role="region" aria-label="可横向滚动的数据表格"><table><thead><tr><th>站点</th><th>轮次</th><th>状态</th><th>耗时</th><th>Input</th><th>Output</th><th>Reasoning</th><th>Total</th><th>详情</th></tr></thead><tbody id="runRows"><tr><td colspan="9" class="empty">暂无测试记录</td></tr></tbody></table></div>
   </section>
 
-  <section class="panel"><div class="section-title"><div><h2>历史正确率</h2><p>仅按中转站聚合，跨模型、CLI 和任务汇总。</p></div><button id="clearHistory" class="danger secondary">清空历史</button></div>
-    <div id="historyStats" class="stat-grid"></div>
-    <details><summary>最近 100 条历史运行记录</summary><div class="table-wrap"><table><thead><tr><th>站点</th><th>引擎</th><th>轮次</th><th>状态</th><th>正确</th><th>耗时</th><th>时间</th><th>详情</th></tr></thead><tbody id="historyRows"></tbody></table></div></details>
+  <section class="panel" id="history" aria-labelledby="historyTitle"><div class="section-title"><div><p class="eyebrow">HISTORY</p><h2 id="historyTitle">历史正确率</h2><p>仅按中转站聚合，跨模型、CLI 和任务汇总。</p></div><button id="clearHistory" class="danger secondary">清空历史</button></div>
+    <div id="historyStats" class="stat-grid"><p class="empty">正在加载历史记录…</p></div>
+    <details><summary>最近 100 条历史运行记录</summary><div class="table-wrap" tabindex="0" role="region" aria-label="可横向滚动的数据表格"><table><thead><tr><th>站点</th><th>引擎</th><th>轮次</th><th>状态</th><th>正确</th><th>耗时</th><th>时间</th><th>详情</th></tr></thead><tbody id="historyRows"></tbody></table></div></details>
   </section>
+  <footer class="page-footer">CandyTest · 正确率用于辅助比较，请结合回答详情判断模型表现。</footer>
 </main>
 <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body></html>

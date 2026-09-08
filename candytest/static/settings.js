@@ -53,7 +53,7 @@
     for (const tab of tabs) {
       const active = tab === selected;
       tab.classList.toggle("active", active);
-      tab.setAttribute("aria-selected", active ? "true" : "false");
+      tab.setAttribute("aria-pressed", active ? "true" : "false");
     }
   }
   for (const tab of document.querySelectorAll(".settings-tab")) tab.onclick = () => selectSettingsSection(tab.dataset.section);
