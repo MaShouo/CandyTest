@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 import unittest
+from functools import lru_cache
 from itertools import product
 from pathlib import Path
 from unittest.mock import patch
@@ -132,19 +133,79 @@ class CliParsingAndIsolationTests(unittest.TestCase):
         self.assertTrue(cli.answer_is_correct("Maria Corina Machado", question_prompt("nobel_peace_2025")[1]))
         self.assertFalse(cli.answer_is_correct("2025-08-08", question_prompt("gpt5_release")[1]))
 
-    def test_dynamic_answer_formula_matches_small_brute_force(self):
-        for counts in product((1, 2), repeat=6):
-            round_apple, round_peach, round_watermelon, star_apple, star_peach, star_watermelon = counts
-            possible = [
-                circles + stars
-                for circles in range(sum(counts[:3]) + 1)
-                for stars in range(sum(counts[3:]) + 1)
-                if circles > round_watermelon
-                and stars > star_watermelon
-                and (circles > round_peach + round_watermelon or stars > star_peach + star_watermelon)
-                and (circles > round_apple + round_watermelon or stars > star_apple + star_watermelon)
-            ]
-            self.assertEqual(candy_prompt(counts)[1], str(min(possible)))
+    @staticmethod
+    def adaptive_draw_count(counts):
+        # Independent game oracle: choose a shape, then an adversary chooses
+        # any category still present in that shape. Observe it before choosing
+        # again. The state records remaining stocks, not fixed shape quotas.
+        @lru_cache(maxsize=None)
+        def remaining_draws(remaining):
+            if ((remaining[0] < counts[0] and remaining[4] < counts[4])
+                    or (remaining[1] < counts[1] and remaining[3] < counts[3])):
+                return 0
+            shape_costs = []
+            for indices in ((0, 1, 2), (3, 4, 5)):
+                outcomes = []
+                for index in indices:
+                    if remaining[index]:
+                        next_state = list(remaining)
+                        next_state[index] -= 1
+                        outcomes.append(remaining_draws(tuple(next_state)))
+                if outcomes:
+                    shape_costs.append(1 + max(outcomes))
+            return min(shape_costs, default=float("inf"))
+
+        return remaining_draws(counts)
+
+    @staticmethod
+    def fixed_quota_draw_count(counts):
+        a1, a2, ao, b1, b2, bo = counts
+        return min(
+            a + b
+            for a in range(sum(counts[:3]) + 1)
+            for b in range(sum(counts[3:]) + 1)
+            if a > ao and b > bo
+            and (a > a2 + ao or b > b2 + bo)
+            and (a > a1 + ao or b > b1 + bo)
+        )
+
+    def test_dynamic_answers_match_both_small_strategy_oracles(self):
+        for counts in product((1, 2, 3), repeat=6):
+            with self.subTest(counts=counts):
+                expected = candy_prompt(counts)[1]
+                accepted = {expected} if isinstance(expected, str) else set(expected)
+                self.assertEqual(accepted, {
+                    str(self.adaptive_draw_count(counts)),
+                    str(self.fixed_quota_draw_count(counts)),
+                })
+
+    def test_adaptive_answer_regressions(self):
+        cases = (
+            ((12, 1, 11, 10, 20, 17), 40, 41),
+            ((12, 2, 11, 10, 20, 17), 40, 42),
+            ((2, 1, 1, 1, 2, 1), 5, 6),
+        )
+        terms = ("ITEM", "MIRS", "YUXK", "FTPG", "VQWH", "NZAJ")
+        for counts, correct, fixed_quota_answer in cases:
+            self.assertEqual(self.adaptive_draw_count(counts), correct)
+            swapped_shapes = counts[3:] + counts[:3]
+            swapped_targets = (counts[1], counts[0], counts[2], counts[4], counts[3], counts[5])
+            for inventory in (counts, swapped_shapes, swapped_targets):
+                for template in PROMPT_TEMPLATES:
+                    with self.subTest(counts=inventory, template=template[:20]):
+                        _, expected = candy_prompt(inventory, terms, template)
+                        self.assertEqual(expected, frozenset((str(correct), str(fixed_quota_answer))))
+                        self.assertTrue(cli.answer_is_correct(f"推理完成\nFINAL: {correct}", expected))
+                        self.assertTrue(cli.answer_is_correct(f"推理完成\nFINAL: {fixed_quota_answer}", expected))
+                        for wrong in range(correct - 1, fixed_quota_answer + 2):
+                            if wrong not in (correct, fixed_quota_answer):
+                                self.assertFalse(cli.answer_is_correct(f"FINAL: {wrong}", expected))
+                        for malformed in (
+                            str(correct), f"中间得到 {correct} 或 {fixed_quota_answer}",
+                            f"FINAL: {correct}\n更正：0", f"FINAL: {correct} 或 {fixed_quota_answer}",
+                            f"中间得到 {correct}\nFINAL: 0",
+                        ):
+                            self.assertFalse(cli.answer_is_correct(malformed, expected))
 
     def test_random_prompt_replaces_keywords_and_draws_six_counts(self):
         letters = list("ABCDEFGHIJKLMNOPQRSTUVWX")
@@ -956,6 +1017,23 @@ class SchedulingTests(unittest.TestCase):
             "incorrect": 0, "errors": 0, "accuracy": 100.0,
         })
         self.assertEqual(stored_job["gateways"][0]["historical_accuracy"], 100.0)
+
+    def test_candy_both_strategy_answers_are_saved_as_correct(self):
+        for mode in ("serial", "parallel"):
+            with self.subTest(mode=mode):
+                job_id = self.make_job(mode, 1)
+
+                def fake_invoke(_engine, site, *_args):
+                    return {"answer": f"推理完成\nFINAL: {39 + site['id']}"}
+
+                with patch("candytest.random.randint", side_effect=(12, 1, 11, 10, 20, 17)), \
+                     patch("candytest.jobs.invoke", side_effect=fake_invoke):
+                    self.manager._run_job(job_id, "pi", mode, 1, "medium", None, self.sites)
+                job = self.db.job(job_id)
+                self.assertEqual(job["summary"]["correct"], 2)
+                self.assertEqual({run["answer"] for run in job["runs"]}, {
+                    "推理完成\nFINAL: 40", "推理完成\nFINAL: 41",
+                })
 
     def test_fixed_candy_format_reaches_question_generator(self):
         job_id = self.make_job("serial", 1)

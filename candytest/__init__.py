@@ -89,26 +89,50 @@ QUESTION_DEFAULTS = {
 }
 DEFAULT_TERMS = ("ITEM", "ALFA", "BRAV", "CHAR", "FORM", "MODE")
 
+# Strings/frozensets require a FINAL line; tuples are whole-answer variants.
+ExpectedAnswer = int | str | frozenset[str] | tuple[str, ...]
+
 
 def candy_prompt(counts: tuple[int, ...], terms: tuple[str, ...] = DEFAULT_TERMS,
-                 template: str = PROMPT_TEMPLATES[0]) -> tuple[str, str]:
-    """Build one question and its minimum guaranteed draw count."""
+                 template: str = PROMPT_TEMPLATES[0]) -> tuple[str, str | frozenset[str]]:
+    """Build a question accepting both strategy minima (positive stocks).
+
+    The unchanged wording leaves observation during drawing unspecified, so
+    accept both adaptive selection and precommitted shape quotas.
+
+    Adaptive proof:
+
+    Upper bound: obtain a non-other item from each shape. If their categories
+    agree, seek the opposite category in the shape with fewer items of the
+    observed category. Other items cost at most their combined stock.
+    Lower bound: in both shapes put all other items first, then the same target
+    category (the one maximizing its minimum stock across shapes), then the
+    opposite target. Any pair needs that minimum stock plus two target draws.
+    """
     shape_a_first, shape_a_second, shape_a_other, shape_b_first, shape_b_second, shape_b_other = counts
-    expected = min(
-        shape_a_other + shape_b_other + max(shape_a_first, shape_a_second) + 2,
-        shape_a_second + shape_a_other + shape_b_first + shape_b_other + 2,
-        shape_a_first + shape_a_other + shape_b_second + shape_b_other + 2,
-        shape_a_other + shape_b_other + max(shape_b_first, shape_b_second) + 2,
+    adaptive = shape_a_other + shape_b_other + 2 + max(
+        min(shape_a_first, shape_b_first),
+        min(shape_a_second, shape_b_second),
+    )
+    # Fixed quotas: force both targets in A or B, or force either cross-pair.
+    fixed_quota = shape_a_other + shape_b_other + 2 + min(
+        max(shape_a_first, shape_a_second),
+        shape_a_second + shape_b_first,
+        shape_a_first + shape_b_second,
+        max(shape_b_first, shape_b_second),
+    )
+    expected = str(adaptive) if adaptive == fixed_quota else frozenset(
+        (str(adaptive), str(fixed_quota)),
     )
     item, first, second, other, shape_a, shape_b = terms
     prompt = template.format(
         *counts, item=item, first=first, second=second, other=other,
         shape_a=shape_a, shape_b=shape_b,
     )
-    return f"{prompt}最后一行必须严格写成 FINAL: <整数>。\n", str(expected)
+    return f"{prompt}最后一行必须严格写成 FINAL: <整数>。\n", expected
 
 
-def random_candy_prompts(rounds: int, random_format: bool | str = False) -> list[tuple[str, int | str]]:
+def random_candy_prompts(rounds: int, random_format: bool | str = False) -> list[tuple[str, ExpectedAnswer]]:
     if random_format == "original":
         question = f"{ORIGINAL_CANDY_PROMPT}最后一行必须严格写成 FINAL: <整数>。\n", "21"
         return [question] * rounds
@@ -121,11 +145,11 @@ def random_candy_prompts(rounds: int, random_format: bool | str = False) -> list
     return [question] * rounds
 
 
-def random_candy_prompt(random_format: bool | str = True) -> tuple[str, int | str]:
+def random_candy_prompt(random_format: bool | str = True) -> tuple[str, ExpectedAnswer]:
     return random_candy_prompts(1, random_format)[0]
 
 
-def question_prompt(question_id: str, random_candy_format: bool | str = False) -> tuple[str, int | str | tuple[str, ...]]:
+def question_prompt(question_id: str, random_candy_format: bool | str = False) -> tuple[str, ExpectedAnswer]:
     if question_id == "candy":
         return random_candy_prompt(random_candy_format)
     if question_id == "cup":

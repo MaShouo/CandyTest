@@ -5,7 +5,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from . import DEFAULT_TIMEOUT_SECONDS, question_prompt, random_candy_prompts
+from . import DEFAULT_TIMEOUT_SECONDS, ExpectedAnswer, question_prompt, random_candy_prompts
 from .cli import InvocationCancelled, answer_is_correct, invoke
 from .storage import Database, utcnow
 
@@ -127,7 +127,7 @@ class JobManager:
 
     def _run_gateway(self, job_id: int, engine: str, effort: str,
                      model_override: str | None, gateway: dict[str, Any],
-                     questions: list[tuple[str, int | str | tuple[str, ...]]],
+                     questions: list[tuple[str, ExpectedAnswer]],
                      cancel_event: threading.Event | None = None,
                      proxy_url: str | None = None,
                      timeout: int = DEFAULT_TIMEOUT_SECONDS) -> None:

@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import DEFAULT_TIMEOUT_SECONDS, PROMPT
+from . import DEFAULT_TIMEOUT_SECONDS, PROMPT, ExpectedAnswer
 
 SECRET_ENV = "CANDYTEST_GATEWAY_API_KEY"
 PI_USER_AGENT = "codex-tui/0.149.0 (Windows 10.0.26200; x86_64) WindowsTerminal (codex-tui; 0.149.0)"
@@ -32,7 +32,9 @@ def _final_answer(answer: str) -> str | None:
     return f"{fraction.group(1)}/{fraction.group(2)}" if fraction else value
 
 
-def answer_is_correct(answer: str, expected: int | str | tuple[str, ...]) -> bool:
+def answer_is_correct(answer: str, expected: ExpectedAnswer) -> bool:
+    if isinstance(expected, frozenset):
+        return _final_answer(answer) in expected
     if isinstance(expected, tuple):
         return answer.strip().casefold() in (value.casefold() for value in expected)
     if isinstance(expected, str):
