@@ -140,7 +140,7 @@ http://[IP]:8765/
 
 中转站 URL 不会自动追加 `/v1`。编辑时 API Key 留空表示保留原值。
 
-### Thibault Sottiaux 识别题
+### 知识识别题（yes/no）
 
 默认每站 **3 轮**、模型 **`gpt-6-astra`**、思考强度 **`low`**，可手动修改；清空模型覆盖则使用各站默认模型。保留英文题面，只要求短答案，不追加 `FINAL:` 指令。
 
@@ -152,7 +152,33 @@ Thibault Sottiaux 题面：
 don't search the internet, do you know Thibault Sottiaux on X. answer yes or no
 ```
 
-此题只反映模型是否自称知道该人物，不能单独证明“降智”或换模。本项目使用 pi/Codex 的 Responses API。历史正确率仍按站点跨题目聚合，移除题目不会删除已有测试历史。
+新增三道获奖知识识别题，沿用以上默认配置和判分规则。题面禁止联网搜索和调用工具，仅凭已有知识回答是否知道答案，不要求输出实际获奖者：
+
+#### 2025 布克奖识别题
+
+```text
+Do not search the internet or use tools. Answer from your existing knowledge only. Do you know the answer to the following question? Answer yes or no only. Do not predict or guess.
+
+Which novel won the Booker Prize in November 2025?
+```
+
+#### 2025 诺贝尔物理学奖识别题
+
+```text
+Do not search the internet or use tools. Answer from your existing knowledge only. Do you know the answer to the following question? Answer yes or no only. Do not predict or guess.
+
+Which three scientists won the Nobel Prize in Physics in October 2025?
+```
+
+#### 2025 威尼斯金狮奖识别题
+
+```text
+Do not search the internet or use tools. Answer from your existing knowledge only. Do you know the answer to the following question? Answer yes or no only. Do not predict or guess.
+
+Which film won the Golden Lion at the Venice Film Festival in September 2025?
+```
+
+这些题只反映模型是否自称知道相应人物或获奖结果，不能单独证明“降智”或换模。本项目使用 pi/Codex 的 Responses API。历史正确率仍按站点跨题目聚合，移除题目不会删除已有测试历史。
 
 ## 设置与数据
 

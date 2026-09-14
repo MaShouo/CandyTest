@@ -118,6 +118,9 @@ class CliParsingAndIsolationTests(unittest.TestCase):
     def test_knowledge_questions_preserve_prompts_and_grade_whole_answers(self):
         cases = (
             ("thibault_sottiaux", "don't search the internet, do you know Thibault Sottiaux on X. answer yes or no", "yes"),
+            ('booker_2025', 'Do not search the internet or use tools. Answer from your existing knowledge only. Do you know the answer to the following question? Answer yes or no only. Do not predict or guess.\n\nWhich novel won the Booker Prize in November 2025?', "yes"),
+            ('nobel_physics_2025', 'Do not search the internet or use tools. Answer from your existing knowledge only. Do you know the answer to the following question? Answer yes or no only. Do not predict or guess.\n\nWhich three scientists won the Nobel Prize in Physics in October 2025?', "yes"),
+            ('venice_golden_lion_2025', 'Do not search the internet or use tools. Answer from your existing knowledge only. Do you know the answer to the following question? Answer yes or no only. Do not predict or guess.\n\nWhich film won the Golden Lion at the Venice Film Festival in September 2025?', "yes"),
         )
         for question_id, original, correct in cases:
             with self.subTest(question=question_id):
@@ -125,12 +128,13 @@ class CliParsingAndIsolationTests(unittest.TestCase):
                 self.assertEqual(prompt, original)
                 self.assertEqual(QUESTION_DEFAULTS[question_id], (3, "low"))
                 self.assertTrue(cli.answer_is_correct(correct, expected))
+                self.assertTrue(cli.answer_is_correct("Yes.", expected))
                 self.assertTrue(cli.answer_is_correct(f" \n{correct.upper()}\n", expected))
-                for wrong in ("", "UNKNOWN", f"Not {correct}", f"{correct}\nUNKNOWN", f"FINAL: {correct}"):
+                for wrong in ("", "no", "No.", "yes or no", "yes, I know", "UNKNOWN", f"Not {correct}", f"{correct}\nUNKNOWN", f"FINAL: {correct}"):
                     self.assertFalse(cli.answer_is_correct(wrong, expected))
 
     def test_removed_knowledge_questions_are_unavailable(self):
-        for question_id in ("gpt5_release", "nobel_peace_2025", "booker_2025"):
+        for question_id in ("gpt5_release", "nobel_peace_2025"):
             with self.subTest(question=question_id):
                 self.assertNotIn(question_id, QUESTION_NAMES)
                 self.assertNotIn(question_id, QUESTION_DEFAULTS)
@@ -577,12 +581,12 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn('<option value="cup">水杯题</option>', template)
         self.assertIn('<option value="probability">骰子概率题</option>', template)
         self.assertIn('<option value="dag10">任务排序题</option>', template)
-        for removed in ("gpt5_release", "nobel_peace_2025", "booker_2025"):
+        for removed in ("gpt5_release", "nobel_peace_2025"):
             self.assertNotIn(removed, template)
             self.assertNotIn(removed, source)
-        for question_id in ("thibault_sottiaux",):
+        for question_id in ('thibault_sottiaux', 'booker_2025', 'nobel_physics_2025', 'venice_golden_lion_2025'):
             self.assertIn(f'<option value="{question_id}">{QUESTION_NAMES[question_id]}</option>', template)
-            self.assertIn(f'{question_id}: {{ rounds: 3, effort: "low" }}', source)
+            self.assertIn(f'{question_id}: {{ rounds: 3, effort: "low", model: "gpt-6-astra" }}', source)
         self.assertIn('id="randomCandyFormat"', template)
         self.assertIn('name="random_candy_format"', template)
         self.assertIn('<option value="false">原题结构（默认，随机数据）</option>', template)
@@ -1079,7 +1083,7 @@ class SchedulingTests(unittest.TestCase):
 
     def test_knowledge_questions_run_and_grade_in_both_scheduling_modes(self):
         for mode in ("serial", "parallel"):
-            for question_id in ("thibault_sottiaux",):
+            for question_id in ('thibault_sottiaux', 'booker_2025', 'nobel_physics_2025', 'venice_golden_lion_2025'):
                 with self.subTest(mode=mode, question=question_id):
                     prompt, expected = question_prompt(question_id)
                     job_id = self.make_job(mode, 3)
@@ -1317,7 +1321,7 @@ class ApiTests(unittest.TestCase):
         manager = self.app.extensions["candytest_jobs"]
         with patch("candytest.app.cli_availability", return_value={"pi": True, "codex": True}), patch.object(manager, "start") as start:
             for engine in ("pi", "codex"):
-                for question_id in ("gpt5_release", "nobel_peace_2025", "booker_2025"):
+                for question_id in ("gpt5_release", "nobel_peace_2025"):
                     with self.subTest(engine=engine, question=question_id):
                         response = self.client.post("/api/jobs", json={
                             "engine": engine, "question_id": question_id, "gateway_ids": [site_id],
@@ -1332,7 +1336,7 @@ class ApiTests(unittest.TestCase):
         with patch("candytest.app.cli_availability", return_value={"pi": True, "codex": True}), \
              patch.object(manager, "start", return_value=321) as start:
             for engine in ("pi", "codex"):
-                for question_id in ("thibault_sottiaux",):
+                for question_id in ('thibault_sottiaux', 'booker_2025', 'nobel_physics_2025', 'venice_golden_lion_2025'):
                     with self.subTest(engine=engine, question=question_id):
                         response = self.client.post("/api/jobs", json={
                             "engine": engine, "question_id": question_id, "gateway_ids": [site_id],

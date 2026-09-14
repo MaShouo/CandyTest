@@ -93,10 +93,13 @@ elements["#modelOverride"] = { value: "old-model" };
 elements["#randomCandyFormat"] = { style: {} };
 context.setEfforts = value => { elements["#effort"] = { value }; };
 load("setQuestionDefaults", "renderEngines");
+for (const question of ['thibault_sottiaux', 'booker_2025', 'nobel_physics_2025', 'venice_golden_lion_2025']) {
+elements["#question"].value = question;
 context.setQuestionDefaults();
 assert.equal(elements["#modelOverride"].value, "gpt-6-astra");
 assert.equal(elements["#effort"].value, "low");
 assert.equal(elements["#rounds"].value, 3);
+}
 elements["#question"].value = "candy";
 context.setQuestionDefaults();
 assert.equal(elements["#modelOverride"].value, "");

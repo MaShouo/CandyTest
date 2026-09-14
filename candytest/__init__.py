@@ -73,17 +73,26 @@ DAG_PROMPT = """十个不同任务 A,B,C,D,E,F,G,H,I,J 的先后约束为：A �
 最后一行必须严格写成 FINAL: <整数>。
 """
 THIBAULT_SOTTIAUX_PROMPT = "don't search the internet, do you know Thibault Sottiaux on X. answer yes or no"
+KNOWLEDGE_PROMPTS = {
+    "thibault_sottiaux": THIBAULT_SOTTIAUX_PROMPT,
+    "booker_2025": 'Do not search the internet or use tools. Answer from your existing knowledge only. Do you know the answer to the following question? Answer yes or no only. Do not predict or guess.\n\nWhich novel won the Booker Prize in November 2025?',
+    "nobel_physics_2025": 'Do not search the internet or use tools. Answer from your existing knowledge only. Do you know the answer to the following question? Answer yes or no only. Do not predict or guess.\n\nWhich three scientists won the Nobel Prize in Physics in October 2025?',
+    "venice_golden_lion_2025": 'Do not search the internet or use tools. Answer from your existing knowledge only. Do you know the answer to the following question? Answer yes or no only. Do not predict or guess.\n\nWhich film won the Golden Lion at the Venice Film Festival in September 2025?',
+}
 QUESTION_NAMES = {
     "candy": "糖果题", "cup": "水杯题",
     "probability": "骰子概率题", "dag10": "任务排序题",
     "thibault_sottiaux": "Thibault Sottiaux 识别题",
+    "booker_2025": "2025 布克奖识别题",
+    "nobel_physics_2025": "2025 诺贝尔物理学奖识别题",
+    "venice_golden_lion_2025": "2025 威尼斯金狮奖识别题",
 }
 QUESTION_DEFAULTS = {
     "candy": (5, "low"), "cup": (2, "medium"),
     "probability": (5, "medium"), "dag10": (5, "medium"),
-    "thibault_sottiaux": (3, "low"),
+    **{key: (3, "low") for key in KNOWLEDGE_PROMPTS},
 }
-QUESTION_DEFAULT_MODELS = {"thibault_sottiaux": "gpt-6-astra"}
+QUESTION_DEFAULT_MODELS = {key: "gpt-6-astra" for key in KNOWLEDGE_PROMPTS}
 DEFAULT_TERMS = ("ITEM", "ALFA", "BRAV", "CHAR", "FORM", "MODE")
 
 # Strings/frozensets require a FINAL line; tuples are whole-answer variants.
@@ -156,8 +165,8 @@ def question_prompt(question_id: str, random_candy_format: bool | str = False) -
     if question_id == "dag10":
         return DAG_PROMPT, "666"
     # Tuples contain accepted whole-answer variants, without a FINAL prefix.
-    if question_id == "thibault_sottiaux":
-        return THIBAULT_SOTTIAUX_PROMPT, ("yes", "yes.")
+    if question_id in KNOWLEDGE_PROMPTS:
+        return KNOWLEDGE_PROMPTS[question_id], ("yes", "yes.")
     raise ValueError("不支持的题目")
 
 
