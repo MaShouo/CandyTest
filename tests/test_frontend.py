@@ -30,7 +30,7 @@ const template = fs.readFileSync("candytest/templates/index.html", "utf8");
 assert.match(template, /id="copyPrompt" type="button"/);
 assert.ok(source.includes('$("#copyPrompt").onclick = copyPrompt;'));
 const button = { focus() {} };
-const form = { question_id: { value: "booker_2025" }, random_candy_format: { value: "original" } };
+const form = { question_id: { value: "thibault_sottiaux" }, random_candy_format: { value: "original" } };
 let copied, message, manual, removed = 0, fallback = true, failure = false;
 const context = vm.createContext({
   $: s => s === "#copyPrompt" ? button : form, URLSearchParams,
@@ -131,12 +131,12 @@ elements["#modelOverride"] = { value: "old-model" };
 elements["#randomCandyFormat"] = { style: {} };
 context.setEfforts = value => { elements["#effort"] = { value }; };
 load("setQuestionDefaults", "renderEngines");
-for (const question of ['thibault_sottiaux', 'booker_2025', 'nobel_physics_2025', 'venice_golden_lion_2025']) {
+for (const question of ['thibault_sottiaux', 'johannes_heidecke', 'sam_mccandlish']) {
 elements["#question"].value = question;
 context.setQuestionDefaults();
 assert.equal(elements["#modelOverride"].value, "gpt-6-astra");
 assert.equal(elements["#effort"].value, "low");
-assert.equal(elements["#rounds"].value, 3);
+assert.equal(elements["#rounds"].value, 5);
 }
 elements["#question"].value = "candy";
 context.setQuestionDefaults();

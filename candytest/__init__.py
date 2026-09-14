@@ -55,15 +55,6 @@ ORIGINAL_CANDY_PROMPT = """不使用任何外部工具回答以下问题：
 圆形       7      9      8
 五角星形   7      6      4
 """
-CUP_PROMPT = """有一个水杯配对游戏。共有 4 种不同颜色的水杯，每种颜色各有两个。将同色的两个水杯分别放在上下两层，因此上下两层各有 4 个水杯。
-下层 4 个水杯按某个未知顺序排列，挑战者无法看到它们；上层水杯的颜色和位置则完全可见。游戏开始后，挑战者可以反复进行以下操作：
-  1. 向裁判询问当前有多少个位置满足“上下两个水杯颜色相同”。裁判只回答匹配位置的总数，不透露具体是哪些位置。
-  2. 根据目前获得的所有信息，挑战者可以选择交换上层任意两个相邻位置的水杯，注意只能是相邻，不能是任意两个。
-当 4 个位置全部匹配时，游戏结束。问题：
-挑战者应采用何种策略，才能保证对于下层水杯的任意排列都能完成配对？所有能保证成功的策略中，最坏情况所需的交换次数最少是多少？
-回答时请不要进行联网搜索，也不要写代码来辅助计算(包括思考过程中)。
-假设答案是 x ，你需要给出严格的证明，为什么 x 可行，为什么小于 x 不可行。
-"""
 PROBABILITY_PROMPT = """独立重复掷一枚公平六面骰，记录累计点数与上一次点数。出现以下任一情况立即停止：A. 当前累计点数达到或超过 10；B. 本次点数与紧邻的上一次点数相同。若某次投掷同时触发 A、B，规定 A 优先，视为 A 停止。
 求最终因 B 停止的概率，答案写成最简分数。请建立有限状态递推并展示足够中间值，使结果可以人工复核。不得联网、调用工具或编写/运行代码。
 最后一行必须严格写成 FINAL: <最简分数>。
@@ -73,24 +64,24 @@ DAG_PROMPT = """十个不同任务 A,B,C,D,E,F,G,H,I,J 的先后约束为：A �
 最后一行必须严格写成 FINAL: <整数>。
 """
 THIBAULT_SOTTIAUX_PROMPT = "don't search the internet, do you know Thibault Sottiaux on X. answer yes or no"
+JOHANNES_HEIDECKE_PROMPT = "don't search the internet, do you know Johannes Heidecke on X. answer yes or no"
+SAM_MCCANDLISH_PROMPT = "don't search the internet, do you know Sam McCandlish on X. answer yes or no"
 KNOWLEDGE_PROMPTS = {
     "thibault_sottiaux": THIBAULT_SOTTIAUX_PROMPT,
-    "booker_2025": 'Do not search the internet or use tools. Answer from your existing knowledge only. Do you know the answer to the following question? Answer yes or no only. Do not predict or guess.\n\nWhich novel won the Booker Prize in November 2025?',
-    "nobel_physics_2025": 'Do not search the internet or use tools. Answer from your existing knowledge only. Do you know the answer to the following question? Answer yes or no only. Do not predict or guess.\n\nWhich three scientists won the Nobel Prize in Physics in October 2025?',
-    "venice_golden_lion_2025": 'Do not search the internet or use tools. Answer from your existing knowledge only. Do you know the answer to the following question? Answer yes or no only. Do not predict or guess.\n\nWhich film won the Golden Lion at the Venice Film Festival in September 2025?',
+    "johannes_heidecke": JOHANNES_HEIDECKE_PROMPT,
+    "sam_mccandlish": SAM_MCCANDLISH_PROMPT,
 }
 QUESTION_NAMES = {
-    "candy": "糖果题", "cup": "水杯题",
+    "candy": "糖果题",
     "probability": "骰子概率题", "dag10": "任务排序题",
     "thibault_sottiaux": "Thibault Sottiaux 识别题",
-    "booker_2025": "2025 布克奖识别题",
-    "nobel_physics_2025": "2025 诺贝尔物理学奖识别题",
-    "venice_golden_lion_2025": "2025 威尼斯金狮奖识别题",
+    "johannes_heidecke": "Johannes Heidecke 识别题",
+    "sam_mccandlish": "Sam McCandlish 识别题",
 }
 QUESTION_DEFAULTS = {
-    "candy": (5, "low"), "cup": (2, "medium"),
+    "candy": (5, "low"),
     "probability": (5, "medium"), "dag10": (5, "medium"),
-    **{key: (3, "low") for key in KNOWLEDGE_PROMPTS},
+    **{key: (5, "low") for key in KNOWLEDGE_PROMPTS},
 }
 QUESTION_DEFAULT_MODELS = {key: "gpt-6-astra" for key in KNOWLEDGE_PROMPTS}
 DEFAULT_TERMS = ("ITEM", "ALFA", "BRAV", "CHAR", "FORM", "MODE")
@@ -158,8 +149,6 @@ def random_candy_prompt(random_format: bool | str = True) -> tuple[str, Expected
 def question_prompt(question_id: str, random_candy_format: bool | str = False) -> tuple[str, ExpectedAnswer]:
     if question_id == "candy":
         return random_candy_prompt(random_candy_format)
-    if question_id == "cup":
-        return CUP_PROMPT, 8
     if question_id == "probability":
         return PROBABILITY_PROMPT, "319/1728"
     if question_id == "dag10":

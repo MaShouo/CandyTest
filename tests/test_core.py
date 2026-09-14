@@ -23,7 +23,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from candytest import (
-    CUP_PROMPT, DAG_PROMPT, ORIGINAL_CANDY_PROMPT, PROBABILITY_PROMPT, PROMPT_TEMPLATES,
+    DAG_PROMPT, ORIGINAL_CANDY_PROMPT, PROBABILITY_PROMPT, PROMPT_TEMPLATES,
     QUESTION_DEFAULTS, QUESTION_NAMES,
     candy_prompt, question_prompt, random_candy_prompt, random_candy_prompts,
 )
@@ -103,11 +103,7 @@ class CliParsingAndIsolationTests(unittest.TestCase):
                 for keyword in ("糖果", "苹果", "桃子", "草莓", "西瓜", "圆形", "五角星"):
                     self.assertNotIn(keyword, prompt)
 
-    def test_cup_question_has_fixed_answer_eight(self):
-        prompt, expected = question_prompt("cup")
-        self.assertEqual((prompt, expected), (CUP_PROMPT, 8))
-        self.assertIn("只能是相邻，不能是任意两个", prompt)
-        self.assertIn("为什么 x 可行，为什么小于 x 不可行", prompt)
+    def test_fixed_reasoning_questions_preserve_prompts_and_answers(self):
         self.assertEqual(question_prompt("probability"), (PROBABILITY_PROMPT, "319/1728"))
         self.assertEqual(question_prompt("dag10"), (DAG_PROMPT, "666"))
         self.assertIn("A 优先", PROBABILITY_PROMPT)
@@ -118,23 +114,22 @@ class CliParsingAndIsolationTests(unittest.TestCase):
     def test_knowledge_questions_preserve_prompts_and_grade_whole_answers(self):
         cases = (
             ("thibault_sottiaux", "don't search the internet, do you know Thibault Sottiaux on X. answer yes or no", "yes"),
-            ('booker_2025', 'Do not search the internet or use tools. Answer from your existing knowledge only. Do you know the answer to the following question? Answer yes or no only. Do not predict or guess.\n\nWhich novel won the Booker Prize in November 2025?', "yes"),
-            ('nobel_physics_2025', 'Do not search the internet or use tools. Answer from your existing knowledge only. Do you know the answer to the following question? Answer yes or no only. Do not predict or guess.\n\nWhich three scientists won the Nobel Prize in Physics in October 2025?', "yes"),
-            ('venice_golden_lion_2025', 'Do not search the internet or use tools. Answer from your existing knowledge only. Do you know the answer to the following question? Answer yes or no only. Do not predict or guess.\n\nWhich film won the Golden Lion at the Venice Film Festival in September 2025?', "yes"),
+            ("johannes_heidecke", "don't search the internet, do you know Johannes Heidecke on X. answer yes or no", "yes"),
+            ("sam_mccandlish", "don't search the internet, do you know Sam McCandlish on X. answer yes or no", "yes"),
         )
         for question_id, original, correct in cases:
             with self.subTest(question=question_id):
                 prompt, expected = question_prompt(question_id)
                 self.assertEqual(prompt, original)
-                self.assertEqual(QUESTION_DEFAULTS[question_id], (3, "low"))
+                self.assertEqual(QUESTION_DEFAULTS[question_id], (5, "low"))
                 self.assertTrue(cli.answer_is_correct(correct, expected))
                 self.assertTrue(cli.answer_is_correct("Yes.", expected))
                 self.assertTrue(cli.answer_is_correct(f" \n{correct.upper()}\n", expected))
                 for wrong in ("", "no", "No.", "yes or no", "yes, I know", "UNKNOWN", f"Not {correct}", f"{correct}\nUNKNOWN", f"FINAL: {correct}"):
                     self.assertFalse(cli.answer_is_correct(wrong, expected))
 
-    def test_removed_knowledge_questions_are_unavailable(self):
-        for question_id in ("gpt5_release", "nobel_peace_2025"):
+    def test_removed_questions_are_unavailable(self):
+        for question_id in ("cup", "gpt5_release", "nobel_peace_2025", "booker_2025", "nobel_physics_2025", "venice_golden_lion_2025"):
             with self.subTest(question=question_id):
                 self.assertNotIn(question_id, QUESTION_NAMES)
                 self.assertNotIn(question_id, QUESTION_DEFAULTS)
@@ -566,7 +561,6 @@ class FrontendSafetyTests(unittest.TestCase):
 
         self.assertIn("multiplier: Number(f.multiplier.value)", source)
         self.assertIn('previous = preferred || select.value || "low"', source)
-        self.assertIn('cup: { rounds: 2, effort: "medium" }', source)
         self.assertIn('probability: { rounds: 5, effort: "medium" }', source)
         self.assertIn('dag10: { rounds: 5, effort: "medium" }', source)
         self.assertIn('question_id: f.question_id.value', source)
@@ -578,15 +572,14 @@ class FrontendSafetyTests(unittest.TestCase):
         template = (Path(__file__).parents[1] / "candytest/templates/index.html").read_text(encoding="utf-8")
         self.assertIn('id="question"', template)
         self.assertIn('<option value="candy">糖果题</option>', template)
-        self.assertIn('<option value="cup">水杯题</option>', template)
         self.assertIn('<option value="probability">骰子概率题</option>', template)
         self.assertIn('<option value="dag10">任务排序题</option>', template)
-        for removed in ("gpt5_release", "nobel_peace_2025"):
+        for removed in ("cup", "gpt5_release", "nobel_peace_2025", "booker_2025", "nobel_physics_2025", "venice_golden_lion_2025"):
             self.assertNotIn(removed, template)
             self.assertNotIn(removed, source)
-        for question_id in ('thibault_sottiaux', 'booker_2025', 'nobel_physics_2025', 'venice_golden_lion_2025'):
+        for question_id in ('thibault_sottiaux', 'johannes_heidecke', 'sam_mccandlish'):
             self.assertIn(f'<option value="{question_id}">{QUESTION_NAMES[question_id]}</option>', template)
-            self.assertIn(f'{question_id}: {{ rounds: 3, effort: "low", model: "gpt-6-astra" }}', source)
+            self.assertIn(f'{question_id}: {{ rounds: 5, effort: "low", model: "gpt-6-astra" }}', source)
         self.assertIn('id="randomCandyFormat"', template)
         self.assertIn('name="random_candy_format"', template)
         self.assertIn('<option value="false">原题结构（默认，随机数据）</option>', template)
@@ -1065,25 +1058,9 @@ class SchedulingTests(unittest.TestCase):
             )
         prompts.assert_called_once_with(1, False)
 
-    def test_cup_question_runs_selected_prompt_and_grades_eight(self):
-        prompts: list[str] = []
-
-        def fake_invoke(_engine, _site, _model, _effort, _timeout, _cancel_event, _proxy_url, prompt):
-            prompts.append(prompt)
-            return {"answer": "最坏情况最少交换 8 次", "elapsed_seconds": 0.0}
-
-        job_id = self.make_job("serial", 2)
-        with patch("candytest.jobs.invoke", side_effect=fake_invoke):
-            self.manager._run_job(
-                job_id, "pi", "serial", 2, "medium", None, self.sites,
-                question_id="cup",
-            )
-        self.assertEqual(prompts, [CUP_PROMPT] * 4)
-        self.assertEqual(self.db.job(job_id)["summary"]["correct"], 4)
-
     def test_knowledge_questions_run_and_grade_in_both_scheduling_modes(self):
         for mode in ("serial", "parallel"):
-            for question_id in ('thibault_sottiaux', 'booker_2025', 'nobel_physics_2025', 'venice_golden_lion_2025'):
+            for question_id in ('thibault_sottiaux', 'johannes_heidecke', 'sam_mccandlish'):
                 with self.subTest(mode=mode, question=question_id):
                     prompt, expected = question_prompt(question_id)
                     job_id = self.make_job(mode, 3)
@@ -1260,14 +1237,11 @@ class ApiTests(unittest.TestCase):
             response = self.client.post("/api/jobs", json={"engine": "pi", "gateway_ids": [site_id]})
         self.assertEqual((response.status_code, response.get_json()["error"]["code"]), (409, "CLI_UNAVAILABLE"))
 
-    def test_job_api_selects_cup_defaults_and_rejects_unknown_question(self):
+    def test_job_api_selects_question_defaults_and_rejects_unknown_question(self):
         site_id = self.add_site()
         manager = self.app.extensions["candytest_jobs"]
         with patch("candytest.app.cli_availability", return_value={"pi": True, "codex": False}), \
              patch.object(manager, "start", return_value=321) as start:
-            response = self.client.post(
-                "/api/jobs", json={"engine": "pi", "question_id": "cup", "gateway_ids": [site_id]},
-            )
             probability = self.client.post(
                 "/api/jobs", json={"engine": "pi", "question_id": "probability", "gateway_ids": [site_id]},
             )
@@ -1294,7 +1268,6 @@ class ApiTests(unittest.TestCase):
                     "engine": "pi", "random_candy_format": "false", "gateway_ids": [site_id],
                 },
             )
-        self.assertEqual(response.status_code, 201)
         self.assertEqual(probability.status_code, 201)
         self.assertEqual(dag.status_code, 201)
         self.assertEqual(fixed.status_code, 201)
@@ -1303,7 +1276,6 @@ class ApiTests(unittest.TestCase):
             [call.args[1:4] + (call.args[-1], call.kwargs["random_candy_format"])
              for call in start.call_args_list],
             [
-                ("parallel", 2, "medium", "cup", False),
                 ("parallel", 5, "medium", "probability", False),
                 ("parallel", 5, "medium", "dag10", False),
                 ("parallel", 5, "low", "candy", False),
@@ -1330,17 +1302,18 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertIn("FINAL:", response.get_json()["prompt"])
         for query, code in (({"question_id": "missing"}, "INVALID_QUESTION"),
+                            ({"question_id": "cup"}, "INVALID_QUESTION"),
                             ({"random_candy_format": "bad"}, "INVALID_RANDOM_FORMAT")):
             response = self.client.get("/api/questions/prompt", query_string=query)
             self.assertEqual(response.status_code, 400)
             self.assertEqual(response.get_json()["error"]["code"], code)
 
-    def test_job_api_rejects_removed_knowledge_questions(self):
+    def test_job_api_rejects_removed_questions(self):
         site_id = self.add_site()
         manager = self.app.extensions["candytest_jobs"]
         with patch("candytest.app.cli_availability", return_value={"pi": True, "codex": True}), patch.object(manager, "start") as start:
             for engine in ("pi", "codex"):
-                for question_id in ("gpt5_release", "nobel_peace_2025"):
+                for question_id in ("cup", "gpt5_release", "nobel_peace_2025", "booker_2025", "nobel_physics_2025", "venice_golden_lion_2025"):
                     with self.subTest(engine=engine, question=question_id):
                         response = self.client.post("/api/jobs", json={
                             "engine": engine, "question_id": question_id, "gateway_ids": [site_id],
@@ -1355,13 +1328,13 @@ class ApiTests(unittest.TestCase):
         with patch("candytest.app.cli_availability", return_value={"pi": True, "codex": True}), \
              patch.object(manager, "start", return_value=321) as start:
             for engine in ("pi", "codex"):
-                for question_id in ('thibault_sottiaux', 'booker_2025', 'nobel_physics_2025', 'venice_golden_lion_2025'):
+                for question_id in ('thibault_sottiaux', 'johannes_heidecke', 'sam_mccandlish'):
                     with self.subTest(engine=engine, question=question_id):
                         response = self.client.post("/api/jobs", json={
                             "engine": engine, "question_id": question_id, "gateway_ids": [site_id],
                         })
                         self.assertEqual(response.status_code, 201)
-                        self.assertEqual(start.call_args.args[:4], (engine, "parallel", 3, "low"))
+                        self.assertEqual(start.call_args.args[:4], (engine, "parallel", 5, "low"))
                         self.assertEqual(start.call_args.args[-1], question_id)
                         self.assertEqual(start.call_args.args[4], "gpt-6-astra")
             for override, expected in (("custom-model", "custom-model"), ("", None)):

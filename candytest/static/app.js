@@ -3,7 +3,7 @@
   const $ = (s) => document.querySelector(s);
   const state = { gateways: [], history: new Map(), runtime: null, webdav: null, syncBusy: false, starting: false, editing: null, inlineEditing: false, currentId: null, currentJob: null, currentJobId: null, selectedGatewayIds: new Set(), draggingGatewayId: null, reordering: false };
   const efforts = { pi: ["off", "minimal", "low", "medium", "high", "xhigh", "max"], codex: ["low", "medium", "high", "xhigh", "max", "ultra"] };
-  const questionDefaults = { candy: { rounds: 5, effort: "low" }, cup: { rounds: 2, effort: "medium" }, probability: { rounds: 5, effort: "medium" }, dag10: { rounds: 5, effort: "medium" }, thibault_sottiaux: { rounds: 3, effort: "low", model: "gpt-6-astra" }, booker_2025: { rounds: 3, effort: "low", model: "gpt-6-astra" }, nobel_physics_2025: { rounds: 3, effort: "low", model: "gpt-6-astra" }, venice_golden_lion_2025: { rounds: 3, effort: "low", model: "gpt-6-astra" } };
+  const questionDefaults = { candy: { rounds: 5, effort: "low" }, probability: { rounds: 5, effort: "medium" }, dag10: { rounds: 5, effort: "medium" }, thibault_sottiaux: { rounds: 5, effort: "low", model: "gpt-6-astra" }, johannes_heidecke: { rounds: 5, effort: "low", model: "gpt-6-astra" }, sam_mccandlish: { rounds: 5, effort: "low", model: "gpt-6-astra" } };
 
   function node(tag, text, className) { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (className) el.className = className; return el; }
   function clear(el, children = []) { el.replaceChildren(...children); }

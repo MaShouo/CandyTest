@@ -144,7 +144,7 @@ http://[IP]:8765/
 
 ### 知识识别题（yes/no）
 
-默认每站 **3 轮**、模型 **`gpt-6-astra`**、思考强度 **`low`**，可手动修改；清空模型覆盖则使用各站默认模型。保留英文题面，只要求短答案，不追加 `FINAL:` 指令。
+默认每站 **5 轮**、模型 **`gpt-6-astra`**、思考强度 **`low`**，可手动修改；清空模型覆盖则使用各站默认模型。保留英文题面，只要求短答案，不追加 `FINAL:` 指令。
 
 按用户指定规则，回答 `yes` 通过（也接受 `Yes.`），`no` 不通过。按完整短答案判分，忽略首尾空白和大小写；`UNKNOWN` 等其他回答计为未答对，不是 API 错误。
 
@@ -154,33 +154,44 @@ Thibault Sottiaux 题面：
 don't search the internet, do you know Thibault Sottiaux on X. answer yes or no
 ```
 
-新增三道获奖知识识别题，沿用以上默认配置和判分规则。题面禁止联网搜索和调用工具，仅凭已有知识回答是否知道答案，不要求输出实际获奖者：
+保留 Thibault Sottiaux 题，并新增两道同结构的人物识别题，沿用以上默认配置和判分规则：
 
-#### 2025 布克奖识别题
-
-```text
-Do not search the internet or use tools. Answer from your existing knowledge only. Do you know the answer to the following question? Answer yes or no only. Do not predict or guess.
-
-Which novel won the Booker Prize in November 2025?
-```
-
-#### 2025 诺贝尔物理学奖识别题
+#### Johannes Heidecke 识别题
 
 ```text
-Do not search the internet or use tools. Answer from your existing knowledge only. Do you know the answer to the following question? Answer yes or no only. Do not predict or guess.
-
-Which three scientists won the Nobel Prize in Physics in October 2025?
+don't search the internet, do you know Johannes Heidecke on X. answer yes or no
 ```
 
-#### 2025 威尼斯金狮奖识别题
+#### Sam McCandlish 识别题
 
 ```text
-Do not search the internet or use tools. Answer from your existing knowledge only. Do you know the answer to the following question? Answer yes or no only. Do not predict or guess.
-
-Which film won the Golden Lion at the Venice Film Festival in September 2025?
+don't search the internet, do you know Sam McCandlish on X. answer yes or no
 ```
 
-这些题只反映模型是否自称知道相应人物或获奖结果，不能单独证明“降智”或换模。本项目使用 pi/Codex 的 Responses API。历史正确率仍按站点跨题目聚合，移除题目不会删除已有测试历史。
+水杯题及原“2025 布克奖 / 诺贝尔物理学奖 / 威尼斯金狮奖”三道获奖识别题已移除；移除只影响新任务的可选题目，不会删除已有测试历史。
+
+#### 经验信号，不是身份证明
+
+这些题只反映模型是否自称知道相应人物，是经验性信号，不能单独证明“降智”或换模：模型可能因训练数据、采样、系统提示或中转站上下文而改变 yes/no 倾向。路由波动也是可能原因，但不能仅凭答案翻转确认原因。请把它当作筛查线索，而不是身份结论。
+
+筛选不要求 astra 永不翻转：在重复对照中，astra 的 yes 比例超过 80%、同时 sol 的 yes 比例为 0，也可作为候选。这个门槛指样本通过率，不代表总体准确率；应累计更多轮次或跨时段复测，并将连接错误与有效的 no 答案分别统计。
+
+另外，必须逐题单独发起对话，不要把多道题合并到同一次对话中。预筛时曾把多题拼进一次提示，结果与单题提示不一致，说明批处理会改变回答结果。
+
+#### 实测记录
+
+在同一个 Responses API 端点 `https://www.micuapi.ai/v1`、独立上下文、`low` 推理强度下，对每题、每个模型各执行 5 次成功的直接 Responses 调用，并通过本项目 `cli.invoke(engine='pi')` 再各执行 3 次；`gpt-5.6-sol` 全部回答 `No.`，`gpt-6-astra` 全部回答 `Yes.`。Sam McCandlish 的 astra 另有一次连接重置，未计入有效回答分母，重试成功。未进行 Codex 实测。
+
+| 题目 | gpt-6-astra 答 yes | gpt-5.6-sol 答 yes |
+| --- | --- | --- |
+| Johannes Heidecke | 8/8（直接 5/5，pi 3/3） | 0/8（直接 0/5，pi 0/3） |
+| Sam McCandlish | 8/8（直接 5/5，pi 3/3） | 0/8（直接 0/5，pi 0/3） |
+
+筛选中未采用的候选包括 Alexander D'Amour（astra 4/5、sol 1/5）、Alex Beutel（astra 5/5、sol 2/5）、Shibani Santurkar（astra 5/5、sol 1/5）及 Michelle Pokrass（astra 2/4、sol 0/4，双方各另有一次连接错误）。这些均为单题直接 API 的 yes 比例，不满足上述联合门槛。
+
+直接 API 返回的 usage 将纯题面计为 Johannes 22 token、Sam 23 token；不是整次请求的输入或账单。实测完整输入约 4,100–4,400 token，包含大量缓存及系统/上下文开销，实际费用以中转站账单为准。本仓库不记录任何凭据或原始响应 ID。
+
+本项目使用 pi/Codex 的 Responses API。历史正确率仍按站点跨题目聚合，移除题目不会删除已有测试历史。
 
 ## 设置与数据
 
