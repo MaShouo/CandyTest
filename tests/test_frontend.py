@@ -87,6 +87,20 @@ elements["#engine"].value = "codex";
 sync();
 assert.equal(elements["#startJob"].disabled, true);
 assert.match(elements["#testEstimate"].textContent, /引擎不可用/);
+vm.runInContext(source.match(/  const questionDefaults = .*;/)[0], context);
+elements["#question"] = { value: "thibault_sottiaux" };
+elements["#modelOverride"] = { value: "old-model" };
+elements["#randomCandyFormat"] = { style: {} };
+context.setEfforts = value => { elements["#effort"] = { value }; };
+load("setQuestionDefaults", "renderEngines");
+context.setQuestionDefaults();
+assert.equal(elements["#modelOverride"].value, "gpt-6-astra");
+assert.equal(elements["#effort"].value, "low");
+assert.equal(elements["#rounds"].value, 3);
+elements["#question"].value = "candy";
+context.setQuestionDefaults();
+assert.equal(elements["#modelOverride"].value, "");
+assert.equal(elements["#rounds"].value, 5);
 console.log("Frontend interaction checks passed");
 ''', text=True, encoding="utf-8", capture_output=True, timeout=15,
         )

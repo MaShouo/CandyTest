@@ -51,11 +51,11 @@
 
   <section class="panel" id="testSetup" aria-labelledby="testSetupTitle"><div class="section-title"><div class="section-heading"><span class="step-number" aria-hidden="true">02</span><div><h2 id="testSetupTitle">配置测试</h2><p>切换题目会自动填入推荐轮数和推理强度，也可以按需调整。</p></div></div></div>
     <form id="jobForm" class="controls">
-      <label>题目<select name="question_id" id="question"><option value="candy">糖果题</option><option value="cup">水杯题</option><option value="probability">骰子概率题</option><option value="dag10">任务排序题</option><option value="gpt5_release">GPT-5 首发日期</option><option value="nobel_peace_2025">2025 诺贝尔和平奖</option><option value="booker_2025">2025 布克奖</option></select></label>
+      <label>题目<select name="question_id" id="question"><option value="candy">糖果题</option><option value="cup">水杯题</option><option value="probability">骰子概率题</option><option value="dag10">任务排序题</option><option value="thibault_sottiaux">Thibault Sottiaux 识别题</option></select></label>
       <label>CLI 引擎<select name="engine" id="engine"><option value="pi">pi</option><option value="codex">Codex</option></select></label>
       <label>每站轮数<input name="rounds" id="rounds" type="number" min="1" max="100" value="5" required></label>
       <label>推理强度<select name="reasoning_effort" id="effort"></select></label>
-      <label>模型覆盖（可选）<input name="model_override" maxlength="300" placeholder="留空使用各站默认模型"></label>
+      <label>模型覆盖（可选）<input name="model_override" id="modelOverride" maxlength="300" placeholder="留空使用各站默认模型"></label>
       <label>调度方式<select name="mode"><option value="parallel">并行（默认）</option><option value="serial">串行</option></select><small>并行：各站同时测试；串行：按站点顺序逐轮执行。</small></label>
       <label id="randomCandyFormat">糖果题格式<select name="random_candy_format"><option value="false">原题结构（默认，随机数据）</option><option value="original">完全原题（不替换）</option><option value="true">随机格式</option></select></label>
       <div class="full form-footer"><p id="testEstimate" class="field-help" role="status">请先选择至少一个中转站。</p><button id="startJob" type="submit" disabled aria-describedby="testEstimate">开始测试</button></div>

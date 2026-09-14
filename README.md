@@ -140,19 +140,19 @@ http://[IP]:8765/
 
 中转站 URL 不会自动追加 `/v1`。编辑时 API Key 留空表示保留原值。
 
-### 低成本知识题
+### Thibault Sottiaux 识别题
 
-题目下拉框新增以下三题，均默认每站 **3 轮、low**；保留实测英文原文，只要求短答案，不追加 `FINAL:` 指令。
+默认每站 **3 轮**、模型 **`gpt-6-astra`**、思考强度 **`low`**，可手动修改；清空模型覆盖则使用各站默认模型。保留英文题面，只要求短答案，不追加 `FINAL:` 指令。
 
-| 题目 | 标准答案 | 核对来源 |
-| --- | --- | --- |
-| GPT-5 首发日期 | `2025-08-07` | [OpenAI](https://openai.com/index/introducing-gpt-5/) |
-| 2025 诺贝尔和平奖 | `María Corina Machado` | [Nobel Prize](https://www.nobelprize.org/prizes/peace/2025/press-release/) |
-| 2025 布克奖 | `Flesh` | [Booker Prizes](https://thebookerprizes.com/media-centre/press-releases/flesh-by-david-szalay-wins-the-booker-prize-2025) |
+按用户指定规则，回答 `yes` 通过（也接受 `Yes.`），`no` 不通过。按完整短答案判分，忽略首尾空白和大小写；`UNKNOWN` 等其他回答计为未答对，不是 API 错误。
 
-按完整短答案判分，忽略首尾空白和大小写；和平奖也接受无重音的 `Maria Corina Machado`。`UNKNOWN` 计为未答对，不是 API 错误。模型覆盖可填 `gpt-6-astra`。
+Thibault Sottiaux 题面：
 
-这些题只反映知识回答差异，不能单独证明“降智”或换模；原始筛选使用 Chat Completions，而本项目仍使用 pi/Codex 的 Responses API，表现需要重新验证。历史正确率仍按站点跨题目聚合。
+```text
+don't search the internet, do you know Thibault Sottiaux on X. answer yes or no
+```
+
+此题只反映模型是否自称知道该人物，不能单独证明“降智”或换模。本项目使用 pi/Codex 的 Responses API。历史正确率仍按站点跨题目聚合，移除题目不会删除已有测试历史。
 
 ## 设置与数据
 

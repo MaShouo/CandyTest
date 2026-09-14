@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 
 from .auth import AuthStateError, ServerAuthStore
-from . import CODEX_EFFORTS, DEFAULT_TIMEOUT_SECONDS, MAX_ROUNDS, PI_EFFORTS, QUESTION_DEFAULTS, QUESTION_NAMES
+from . import CODEX_EFFORTS, DEFAULT_TIMEOUT_SECONDS, MAX_ROUNDS, PI_EFFORTS, QUESTION_DEFAULTS, QUESTION_DEFAULT_MODELS, QUESTION_NAMES
 from .cli import cli_availability
 from .jobs import JobManager
 from .storage import Database, default_data_dir
@@ -639,7 +639,7 @@ def create_app(data_dir: Path | None = None) -> Flask:
         allowed = PI_EFFORTS if engine == "pi" else CODEX_EFFORTS
         if effort not in allowed:
             return api_error("INVALID_REASONING", f"{engine} 不支持该 reasoning effort")
-        override = data.get("model_override")
+        override = data.get("model_override", QUESTION_DEFAULT_MODELS.get(question_id))
         if override is not None:
             if not isinstance(override, str) or len(override.strip()) > 300:
                 return api_error("INVALID_MODEL", "模型覆盖值必须是长度合理的文本")
