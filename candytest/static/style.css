@@ -481,6 +481,13 @@ small {
 
 .form-footer .actions { margin-left: auto; }
 
+.prompt-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
 .task-progress {
   display: block;
   width: 100%;

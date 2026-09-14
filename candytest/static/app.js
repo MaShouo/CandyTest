@@ -21,6 +21,40 @@
     if (!response.ok) { const error = new Error(data.error?.message || `请求失败 (${response.status})`); error.code = data.error?.code || "HTTP_ERROR"; error.status = response.status; throw error; }
     return data;
   }
+  async function copyPrompt() {
+    const button = $("#copyPrompt"), form = $("#jobForm");
+    const questionId = form.question_id.value, candyFormat = form.random_candy_format.value;
+    button.disabled = true;
+    button.textContent = "正在复制…";
+    try {
+      const query = new URLSearchParams({ question_id: questionId, random_candy_format: candyFormat });
+      const { prompt } = await api(`/api/questions/prompt?${query}`);
+      let copied = false;
+      if (navigator.clipboard?.writeText) {
+        try { await navigator.clipboard.writeText(prompt); copied = true; } catch (_) { /* HTTP/permission fallback below. */ }
+      }
+      if (!copied) {
+        const textarea = document.createElement("textarea");
+        textarea.value = prompt;
+        textarea.setAttribute("readonly", "");
+        textarea.setAttribute("aria-label", "题目提示词");
+        document.body.append(textarea);
+        try {
+          textarea.focus(); textarea.select();
+          copied = document.execCommand("copy");
+        } catch (_) { /* Offer manual copying when browser denies clipboard access. */ }
+        finally { textarea.remove(); }
+      }
+      if (copied) {
+        flash(questionId === "candy" && candyFormat !== "original"
+          ? "提示词已复制（随机生成示例，开始测试时会重新生成）。" : "题目提示词已复制。");
+      } else {
+        window.prompt("浏览器不允许自动复制，请手动复制以下提示词：", prompt);
+        flash("自动复制未成功，已提供手动复制窗口。", true);
+      }
+    } catch (e) { flash(e.message, true); }
+    finally { button.disabled = false; button.textContent = "复制题目提示词"; button.focus(); }
+  }
   function accuracyBadge(value) { const low = value != null && value < 80; return node("span", pct(value), `badge ${low ? "error" : "ok"}`); }
   function runVisual(run) {
     if (run.status === "error") return run.error_kind === "gateway_unavailable" ? { text: "中转站不可用", className: "warn" } : { text: "API 错误", className: "warn" };
@@ -382,6 +416,7 @@
   $("#engine").onchange = () => { setEfforts(); updateTestEstimate(); };
   $("#rounds").oninput = () => updateTestEstimate();
   $("#question").onchange = setQuestionDefaults;
+  $("#copyPrompt").onclick = copyPrompt;
   $("#jobForm").onsubmit = async (event) => {
     event.preventDefault();
     if ($("#startJob").disabled) return;

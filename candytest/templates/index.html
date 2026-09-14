@@ -58,7 +58,7 @@
       <label>模型覆盖（可选）<input name="model_override" id="modelOverride" maxlength="300" placeholder="留空使用各站默认模型"></label>
       <label>调度方式<select name="mode"><option value="parallel">并行（默认）</option><option value="serial">串行</option></select><small>并行：各站同时测试；串行：按站点顺序逐轮执行。</small></label>
       <label id="randomCandyFormat">糖果题格式<select name="random_candy_format"><option value="false">原题结构（默认，随机数据）</option><option value="original">完全原题（不替换）</option><option value="true">随机格式</option></select></label>
-      <div class="full form-footer"><p id="testEstimate" class="field-help" role="status">请先选择至少一个中转站。</p><button id="startJob" type="submit" disabled aria-describedby="testEstimate">开始测试</button></div>
+      <div class="full form-footer"><p id="testEstimate" class="field-help" role="status">请先选择至少一个中转站。</p><div class="prompt-actions"><button id="copyPrompt" type="button" class="secondary">复制题目提示词</button><button id="startJob" type="submit" disabled aria-describedby="testEstimate">开始测试</button></div></div>
     </form>
   </section>
 

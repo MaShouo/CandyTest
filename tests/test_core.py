@@ -1316,6 +1316,25 @@ class ApiTests(unittest.TestCase):
             (400, "INVALID_RANDOM_FORMAT"),
         )
 
+    def test_copy_question_prompt_api(self):
+        for question_id in QUESTION_NAMES:
+            with self.subTest(question=question_id):
+                response = self.client.get("/api/questions/prompt", query_string={
+                    "question_id": question_id, "random_candy_format": "original",
+                })
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.get_json(), {"prompt": question_prompt(question_id, "original")[0]})
+                self.assertEqual(response.headers["Cache-Control"], "no-store")
+        for candy_format in ("true", "false"):
+            response = self.client.get("/api/questions/prompt", query_string={"random_candy_format": candy_format})
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("FINAL:", response.get_json()["prompt"])
+        for query, code in (({"question_id": "missing"}, "INVALID_QUESTION"),
+                            ({"random_candy_format": "bad"}, "INVALID_RANDOM_FORMAT")):
+            response = self.client.get("/api/questions/prompt", query_string=query)
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(response.get_json()["error"]["code"], code)
+
     def test_job_api_rejects_removed_knowledge_questions(self):
         site_id = self.add_site()
         manager = self.app.extensions["candytest_jobs"]

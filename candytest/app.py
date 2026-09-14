@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 
 from .auth import AuthStateError, ServerAuthStore
-from . import CODEX_EFFORTS, DEFAULT_TIMEOUT_SECONDS, MAX_ROUNDS, PI_EFFORTS, QUESTION_DEFAULTS, QUESTION_DEFAULT_MODELS, QUESTION_NAMES
+from . import CODEX_EFFORTS, DEFAULT_TIMEOUT_SECONDS, MAX_ROUNDS, PI_EFFORTS, QUESTION_DEFAULTS, QUESTION_DEFAULT_MODELS, QUESTION_NAMES, question_prompt
 from .cli import cli_availability
 from .jobs import JobManager
 from .storage import Database, default_data_dir
@@ -612,6 +612,21 @@ def create_app(data_dir: Path | None = None) -> Flask:
         if not changed:
             return api_error("GATEWAY_NOT_FOUND", "中转站不存在或已删除", 404)
         return jsonify({"ok": True, "deleted_runs": deleted_runs})
+
+    @app.get("/api/questions/prompt")
+    def get_question_prompt():
+        question_id = request.args.get("question_id", "candy")
+        if question_id not in QUESTION_NAMES:
+            return api_error("INVALID_QUESTION", "请选择有效题目")
+        candy_format = request.args.get("random_candy_format", "false")
+        if candy_format not in {"false", "true", "original"}:
+            return api_error("INVALID_RANDOM_FORMAT", "请选择有效的糖果题格式")
+        prompt, _ = question_prompt(
+            question_id, "original" if candy_format == "original" else candy_format == "true",
+        )
+        response = jsonify({"prompt": prompt})
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.post("/api/jobs")
     def create_job():
